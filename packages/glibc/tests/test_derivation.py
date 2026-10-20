@@ -16,7 +16,7 @@ import patching
 import verify
 
 FIXTURE = yaml.safe_load((ROOT / 'packages/glibc/tests/fixtures/glibc-2.44.yaml').read_text())
-COMMIT = FIXTURE['vars']['glibc-expected-commit']
+COMMIT = FIXTURE['pipeline'][0]['with']['expected-commit']
 
 
 class Derivation(unittest.TestCase):
@@ -65,6 +65,39 @@ class Derivation(unittest.TestCase):
     def test_source_pin_mismatch_is_rejected(self):
         with self.assertRaises(AssertionError):
             self.derived(lock={'source_commit': '0' * 40})
+
+    def test_literal_checkout_pin_is_retained_in_package_metadata(self):
+        result = self.derived()[2]
+        self.assertEqual(COMMIT, result['vars']['glibc-expected-commit'])
+
+    def test_legacy_variable_pin_and_sourceware_checkout_remain_supported(self):
+        def change(upstream):
+            upstream['vars']['glibc-expected-commit'] = COMMIT
+            checkout = upstream['pipeline'][0]['with']
+            checkout['expected-commit'] = '${{vars.glibc-expected-commit}}'
+            checkout['repository'] = 'https://sourceware.org/git/glibc.git'
+        _, upstream, result = self.derived(change)
+        verify.check(packages.Package('glibc'), upstream, result)
+        self.assertEqual(COMMIT, result['vars']['glibc-expected-commit'])
+
+    def test_unreviewed_checkout_repository_is_rejected(self):
+        def change(upstream):
+            upstream['pipeline'][0]['with']['repository'] = 'https://example.com/glibc.git'
+        with self.assertRaisesRegex(ValueError, 'Review changed'):
+            self.derived(change)
+
+    def test_changed_checkout_branch_is_rejected(self):
+        def change(upstream):
+            upstream['pipeline'][0]['with']['branch'] = 'master'
+        with self.assertRaisesRegex(ValueError, 'Review changed'):
+            self.derived(change)
+
+    def test_unresolved_pin_cannot_use_a_stale_metadata_variable(self):
+        def change(upstream):
+            upstream['vars']['glibc-expected-commit'] = COMMIT
+            upstream['pipeline'][0]['with']['expected-commit'] = '${{vars.unknown}}'
+        with self.assertRaises(AssertionError):
+            self.derived(change)
 
     def test_changed_upstream_source_checkout_requires_review(self):
         def change(upstream):

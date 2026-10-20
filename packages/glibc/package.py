@@ -1,4 +1,4 @@
-"""glibc: Wolfi's newest glibc, with four policy patches (README.md).
+"""glibc: Wolfi's newest glibc, with fixed policy patches (README.md).
 
 The hooks scripts/packages.py names. The derivation renames the packages
 glibc-neutered-VERSION, which provide Wolfi's names, so an image can require
@@ -45,7 +45,9 @@ fi
 
 def derive(pkg, config, lock):
     policy = pkg.policy
-    assert config['vars']['glibc-expected-commit'] == lock['source_commit']
+    assert source_commit(config) == lock['source_commit']
+    # Retain the source pin in package metadata after replacing the checkout.
+    config['vars']['glibc-expected-commit'] = lock['source_commit']
     original = config['package']['name']
     config['package']['name'] = original.replace('glibc-', 'glibc-neutered-', 1)
     wolfi = f"{config['package']['version']}-r{config['package']['epoch']}"
@@ -69,10 +71,14 @@ def derive(pkg, config, lock):
     pipeline = config['pipeline']
     assert pipeline[0]['uses'] == 'git-checkout'
     assert pipeline[1]['uses'] == 'patch'
-    if pipeline[0]['with'] != {
-            'expected-commit': '${{vars.glibc-expected-commit}}',
-            'repository': 'https://sourceware.org/git/glibc.git',
-            'branch': 'release/${{package.version}}/master'}:
+    checkout = pipeline[0]['with']
+    if (set(checkout) != {'expected-commit', 'repository', 'branch'} or
+            checkout['expected-commit'] not in {
+                lock['source_commit'], '${{vars.glibc-expected-commit}}'} or
+            checkout['repository'] not in {
+                'https://sourceware.org/git/glibc.git',
+                'https://gitlab.com/gnutools/glibc.git'} or
+            checkout['branch'] != 'release/${{package.version}}/master'):
         raise ValueError('Review changed upstream source checkout before deriving')
     pipeline[0] = fetch(lock['source_commit'], SOURCES)
     pipeline.insert(2, patching.step(PATCHES))
@@ -230,7 +236,13 @@ def stable(config):
     return 'glibc=${{package.full-version}}' in provides
 
 def source_commit(config):
-    return config.get('vars', {}).get('glibc-expected-commit')
+    pipeline = config.get('pipeline', [])
+    if not pipeline or pipeline[0].get('uses') != 'git-checkout':
+        return None
+    pin = pipeline[0].get('with', {}).get('expected-commit')
+    if pin == '${{vars.glibc-expected-commit}}':
+        return config.get('vars', {}).get('glibc-expected-commit')
+    return pin
 
 def check_policy(policy):
     if type(policy['max_fail_per_mille']) is not int or not 0 <= policy['max_fail_per_mille'] <= 55:

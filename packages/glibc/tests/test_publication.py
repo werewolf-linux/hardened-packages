@@ -26,7 +26,7 @@ class LatestInputs(unittest.TestCase):
     def recipe(self, root, version, source='1'*40, primary=True):
         config = {'package': {'name': 'glibc-' + version, 'version': version,
                               'dependencies': {'provides': ['glibc=${{package.full-version}}'] if primary else []}},
-                  'vars': {'glibc-expected-commit': source}}
+                  'pipeline': [{'uses': 'git-checkout', 'with': {'expected-commit': source}}]}
         (root / ('glibc-' + version + '.yaml')).write_text(yaml.safe_dump(config))
 
     def test_latest_is_numeric_and_stable(self):

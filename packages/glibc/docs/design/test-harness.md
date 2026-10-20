@@ -39,6 +39,21 @@ Failures include intentionally removed features, missing environment-selected fi
 
 Native `tests/run.py --trace-spawn` uses strace to check the actual shell exec environment. Its explicit-spawn positive control forwards IFS; wordexp must strip IFS while forwarding ordinary application data, for dynamic and static callers. Trace files are temporary and not published.
 
+`tests/run.py` builds and executes `elf/tst-werewolf-audit` as a mandatory gate.
+It compiles the actual audit dispatch with private state using glibc's internal
+types. Every entry point receives forged registration; callbacks must not run,
+bindings must stay unchanged, and invalid audit pointers must not be read.
+The shipped dispatch object must have no reference to loader global state.
+Separate probes retain IFUNC execution at startup and through dlopen, dlmopen
+and dlsym. Their results are recorded in `policy-report.json`.
+
+For a positive control, preserve `elf/dl-audit.c` from the pinned source before
+applying patches as `elf/dl-audit-control.c`. Add a development-only test source
+which defines `EXPECT_AUDIT` as 1 and `AUDIT_SOURCE` as `"dl-audit-control.c"`,
+then includes `"tst-werewolf-audit.c"`. Build it as a `tests-internal` test.
+Each callback must run and substitute the fixture's binding or search result.
+This control changes only a test executable, never the running loader's state.
+
 `scripts/compare-results.py` verifies matching source commits and architectures, then records all original statuses, changed cases and new failure outputs. Reports stay under `build/analysis`; a failed case is never converted to PASS by this script.
 
 `scripts/benchmark.py` extracts only runtime libraries from explicitly selected native APKs, checks matching source commits/architectures, and links otherwise identical fixtures to each loader/libc. It alternates run order and retains APK hashes, compiler/ELF evidence and raw samples. Compare startup, single/threaded allocations, memory operations, account lookup and hosts-file lookup. Run after builds finish; use repeated measurements for any regression over 5%.
