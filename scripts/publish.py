@@ -23,6 +23,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import zlib
 import yaml
 from derive import derive
@@ -62,6 +63,44 @@ def release(tag):
     if len(matches) > 1:
         raise ValueError('Multiple releases use the same build tag')
     return matches[0] if matches else None
+
+def release_target(tag):
+    # target_commitish only creates a missing tag. For an existing tag, keep
+    # its verified source and omit this redundant field: GitHub otherwise
+    # checks historical workflow files against main and rejects Actions tokens.
+    source = os.environ['GITHUB_SHA']
+    try:
+        ref = json.loads(run('gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] +
+                             '/git/ref/tags/' + tag))
+    except subprocess.CalledProcessError as error:
+        if json.loads(error.stdout or '{}').get('status') != '404':
+            raise
+        return {'target_commitish': source}
+    if ref['object']['type'] != 'commit' or ref['object']['sha'] != source:
+        raise ValueError('Release tag does not point to the validated source: ' + tag)
+    return {}
+
+def asset(current, name):
+    matches = [a for a in current['assets'] if a['name'] == name]
+    if len(matches) != 1:
+        raise ValueError('Missing or duplicate release asset: ' + name)
+    return matches[0]
+
+def download_asset(current, name, destination):
+    # Drafts are visible through the release listing, but the tag lookup used
+    # by `gh release download/upload` can return 404 for an Actions token.
+    found = asset(current, name)
+    with destination.open('wb') as output:
+        subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream',
+                        'repos/' + os.environ['GITHUB_REPOSITORY'] +
+                        '/releases/assets/' + str(found['id'])],
+                       check=True, stdout=output)
+
+def upload_asset(current, path):
+    url = current['upload_url'].split('{', 1)[0]
+    url += '?' + urllib.parse.urlencode({'name': path.name})
+    return json.loads(run('gh', 'api', '--method', 'POST', url,
+                         '-H', 'Content-Type: application/octet-stream', '--input', str(path)))
 
 def archive(directory, destination):
     # Retry staging from the same artifacts without depending on extraction times.
@@ -111,6 +150,8 @@ def authenticated(path, key):
     return parts
 
 def package_names(config):
+    # Keep publication independent of new APIs in the authenticated builder:
+    # recovery replaces this file alone in the original source snapshot.
     def expand(name):
         return name.replace('${{package.name}}', config['package']['name']).replace(
             '${{package.version}}', str(config['package']['version']))
@@ -299,7 +340,7 @@ def stage(pkg, artifacts, assets, lock, tag):
     if 'release-notes.json' in staged:
         # A retry keeps the notes first staged, whatever has changed since.
         for name in files:
-            run('gh', 'release', 'download', tag, '--pattern', name, '--clobber', '--dir', str(assets))
+            download_asset(current, name, assets / name)
     else:
         module = notes_of(pkg)
         made = module.build(pkg.hook('gather', gather)(pkg, artifacts, lock, records))
@@ -312,7 +353,7 @@ def stage(pkg, artifacts, assets, lock, tag):
         request = Path(directory) / 'release.json'
         if current is None:
             body.update({'tag_name': tag, 'draft': True, 'make_latest': 'false',
-                         'target_commitish': os.environ['GITHUB_SHA'], 'name': pkg.title + ' ' + manifest['version']})
+                         'name': pkg.title + ' ' + manifest['version'], **release_target(tag)})
             request.write_text(json.dumps(body))
             current = json.loads(run('gh', 'api', '--method', 'POST',
                                      'repos/' + os.environ['GITHUB_REPOSITORY'] + '/releases',
@@ -329,11 +370,11 @@ def stage(pkg, artifacts, assets, lock, tag):
             [assets / name for name in files] + [assets / 'release.json']:
         if path.name in existing:
             with tempfile.TemporaryDirectory() as directory:
-                run('gh', 'release', 'download', tag, '--pattern', path.name, '--dir', directory)
+                download_asset(current, path.name, Path(directory) / path.name)
                 if sha256(Path(directory) / path.name) != sha256(path):
                     raise ValueError('Release asset already exists with different bytes: ' + path.name)
         else:
-            run('gh', 'release', 'upload', tag, str(path))
+            upload_asset(current, path)
 
 def aws(*arguments):
     return subprocess.run(['aws', '--endpoint-url', ENDPOINT, '--region', 'auto',
@@ -484,7 +525,16 @@ def advance_current(pkg, manifest, path):
 
 def publish(pkg, assets, lock, tag, key=ROOT / 'build/keys/werewolf-packages.rsa'):
     assets.mkdir(parents=True, exist_ok=True)
-    run('gh', 'release', 'download', tag, '--dir', str(assets), '--clobber')
+    current = release(tag)
+    if current is None:
+        raise ValueError('Release has not been staged')
+    seen = set()
+    for found in current['assets']:
+        name = found['name']
+        if not name or Path(name).name != name or name in ('.', '..') or name in seen:
+            raise ValueError('Unsafe or duplicate release asset name')
+        seen.add(name)
+        download_asset(current, name, assets / name)
     manifest = json.loads((assets / 'release.json').read_text())
     if manifest['build_id'] != lock['build_id'] or not re.fullmatch('[0-9a-f]{40}', manifest['source_sha']):
         raise ValueError('Release manifest does not match captured inputs')
@@ -529,7 +579,10 @@ def publish(pkg, assets, lock, tag, key=ROOT / 'build/keys/werewolf-packages.rsa
     if noted and hasattr(notes_of(pkg), 'releases'):
         update_index(pkg, json.loads((assets / 'release-notes.json').read_text()))
     # The public release is the completion marker, after both R2 repositories exist.
-    run('gh', 'release', 'edit', tag, '--draft=false', '--latest=false')
+    request = assets / 'publish-request.json'
+    request.write_text(json.dumps({'draft': False, 'make_latest': 'false'}))
+    run('gh', 'api', '--method', 'PATCH', 'repos/' + os.environ['GITHUB_REPOSITORY'] +
+        '/releases/' + str(current['id']), '--input', str(request))
     print(manifest['repository'])
 
 def update_index(pkg, made):

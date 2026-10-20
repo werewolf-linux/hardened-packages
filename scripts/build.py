@@ -156,7 +156,13 @@ def main():
             recipe = pkg.build / (pkg.name + '-test.yaml')
             recipe.write_text(yaml.safe_dump(config, sort_keys=False))
             # Wolfi's shared test pipelines use apk to list what a package holds.
-            extra = [arg for name in pkg.hook('TEST_PACKAGES', ['busybox', 'apk-tools'])
+            # Test the captured package set even if Wolfi publishes newer
+            # versions while this build runs. Pin every subpackage so each
+            # test resolves the corresponding runtime dependencies as well.
+            package = config['package']
+            version = f"{package['version']}-r{package['epoch']}"
+            candidates = [name + '=' + version for name in sorted(packages.output_names(config))]
+            extra = [arg for name in candidates + pkg.hook('TEST_PACKAGES', ['busybox', 'apk-tools'])
                      for arg in ('--test-package-append', name)]
             try:
                 subprocess.run([melange, 'test', str(recipe), *common, '--source-dir', str(test_context),

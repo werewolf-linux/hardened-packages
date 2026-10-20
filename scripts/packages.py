@@ -12,6 +12,24 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = 'https://dist.werewolf-linux.org/'
 
 
+def output_names(config):
+    """The complete package set built from one derived recipe."""
+    def expand(name):
+        return name.replace('${{package.name}}', config['package']['name']).replace(
+            '${{package.version}}', str(config['package']['version']))
+    names = {config['package']['name']}
+    ranges = {item['name']: item['items'] for item in config.get('data', [])}
+    for sub in config['subpackages']:
+        if sub.get('if'):
+            raise ValueError('Review conditional package publication before updating')
+        for key in ranges[sub['range']] if 'range' in sub else ['']:
+            name = expand(sub['name']).replace('${{range.key}}', key)
+            if '${{' in name:
+                raise ValueError('Unresolved package name: ' + name)
+            names.add(name)
+    return names
+
+
 def sibling(path, name):
     """Load module name from the file beside path, under a name of its own."""
     path = Path(path).with_name(name + '.py')

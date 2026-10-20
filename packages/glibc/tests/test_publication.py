@@ -105,31 +105,41 @@ class ReleaseGate(unittest.TestCase):
             def run(*args):
                 nonlocal current, fail
                 calls.append(args)
-                if args[:3] == ('gh', 'api', '--method'):
+                if args == ('gh', 'api', 'repos/example/repo/git/ref/tags/build-example'):
+                    return json.dumps({'object': {'type': 'commit', 'sha': '1' * 40}})
+                if args[:5] == ('gh', 'api', '--method', 'POST', 'repos/example/repo/releases'):
                     request = json.loads(Path(args[-1]).read_text())
+                    # GitHub rejects an explicit historical workflow target even
+                    # though the already-existing tag is correct.
+                    if 'target_commitish' in request:
+                        raise RuntimeError('Resource not accessible by integration (HTTP 403)')
                     self.assertTrue(request['draft'])
                     self.assertEqual('glibc 2.44-r16', request['name'])
                     self.assertEqual('false', request['make_latest'])
                     self.assertIn('## Changes since 2.44-r20', request['body'])
-                    current = {'draft': True, 'assets': [], 'body': request['body'], 'id': 1}
+                    current = {'draft': True, 'assets': [], 'body': request['body'], 'id': 1,
+                               'upload_url': 'https://uploads.github.com/repos/example/repo/releases/1/assets{?name,label}'}
                     return json.dumps(current)
-                if args[:3] == ('gh', 'release', 'upload'):
+                if args[:4] == ('gh', 'api', '--method', 'POST'):
+                    self.assertTrue(args[4].startswith(current['upload_url'].split('{')[0] + '?name='))
                     path = Path(args[-1])
                     if path.name == 'glibc-aarch64.tar.gz' and fail:
                         fail = False
                         raise RuntimeError('transient upload failure')
                     uploaded[path.name] = path.read_bytes()
-                    current['assets'].append({'name': path.name})
-                elif args[:3] == ('gh', 'release', 'download'):
-                    name = args[args.index('--pattern') + 1]
-                    (Path(args[-1]) / name).write_bytes(uploaded[name])
+                    item = {'id': len(current['assets']) + 1, 'name': path.name}
+                    current['assets'].append(item)
+                    return json.dumps(item)
                 return ''
+            def download(current, name, destination):
+                destination.write_bytes(uploaded[name])
             environment = {'GITHUB_REPOSITORY': 'example/repo', 'GITHUB_SHA': '1' * 40,
                            'GITHUB_RUN_NUMBER': '1'}
             gather = MagicMock(side_effect=lambda *a: facts())
             with patch.dict(os.environ, environment), \
                  patch.object(publish, 'validate', return_value={'version': '2.44-r16'}), \
                  patch.object(publish, 'release', side_effect=lambda tag: current), \
+                 patch.object(publish, 'download_asset', side_effect=download), \
                  patch.object(GLIBC.hooks, 'gather', gather), \
                  patch.object(publish, 'run', side_effect=run):
                 with self.assertRaisesRegex(RuntimeError, 'transient upload'):
@@ -139,7 +149,8 @@ class ReleaseGate(unittest.TestCase):
                 os.utime(artifacts / 'glibc-x86_64' / 'example.apk', (99, 99))
                 publish.stage(GLIBC, artifacts, assets, {'build_id': 'example'}, 'build-example')
                 self.assertEqual(original, uploaded['glibc-x86_64.tar.gz'])
-                self.assertEqual(1, sum(args[:3] == ('gh', 'api', '--method') for args in calls))
+                self.assertEqual(1, sum(args[:5] == ('gh', 'api', '--method', 'POST',
+                                                   'repos/example/repo/releases') for args in calls))
                 self.assertEqual('release.json', calls[-1][-1].split('/')[-1])
                 self.assertEqual('gh', calls[-1][0])
                 manifest = json.loads(uploaded['release.json'])
@@ -149,7 +160,8 @@ class ReleaseGate(unittest.TestCase):
                                         for name, digest in manifest['sha256'].items()),
                                  uploaded['SHA256SUMS'].decode())
                 self.assertFalse(any(args[:3] == ('gh', 'release', 'edit') for args in calls))
-                names = [Path(args[-1]).name for args in calls if args[:3] == ('gh', 'release', 'upload')]
+                names = [Path(args[-1]).name for args in calls
+                         if args[:4] == ('gh', 'api', '--method', 'POST') and '/assets?' in args[4]]
                 self.assertEqual(['release-notes.md', 'release-notes.html', 'release-notes.json', 'release.json'], names[-4:])
                 uploaded['glibc-x86_64.tar.gz'] = b'conflicting bytes'
                 with self.assertRaisesRegex(ValueError, 'different bytes'):
@@ -179,7 +191,11 @@ class ReleaseGate(unittest.TestCase):
             def stable(pkg, packages, arch, key, work):
                 self.assertTrue((packages / arch / 'APKINDEX.tar.gz').is_file())
                 return packages / arch / 'APKINDEX.tar.gz', []
-            with patch.object(publish, 'run') as run, \
+            current = {'id': 42, 'assets': [{'name': p.name} for p in assets.iterdir()]}
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/repo'}), \
+                 patch.object(publish, 'run') as run, \
+                 patch.object(publish, 'release', return_value=current), \
+                 patch.object(publish, 'download_asset') as download, \
                  patch.object(publish, 'validate') as validate, \
                  patch.object(publish, 'stable', side_effect=stable), \
                  patch.object(publish, 'merge_index'), \
@@ -193,8 +209,13 @@ class ReleaseGate(unittest.TestCase):
                     self.assertIn(((GLIBC, assets / name, 'builds/example/' + name), {}),
                                   upload.call_args_list)
                 self.assertEqual((GLIBC, manifest, assets / 'release.json'), advance.call_args.args)
-                self.assertEqual(('gh', 'release', 'edit', 'build-example',
-                                  '--draft=false', '--latest=false'), run.call_args.args)
+                self.assertEqual(('gh', 'api', '--method', 'PATCH',
+                                  'repos/example/repo/releases/42',
+                                  '--input', str(assets / 'publish-request.json')), run.call_args.args)
+                self.assertEqual({'draft': False, 'make_latest': 'false'},
+                                 json.loads((assets / 'publish-request.json').read_text()))
+                self.assertEqual({p['name'] for p in current['assets']},
+                                 {call.args[1] for call in download.call_args_list})
                 run.reset_mock()
                 upload.reset_mock()
                 manifest['sha256'].pop('glibc-aarch64.tar.gz')
@@ -202,7 +223,7 @@ class ReleaseGate(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Both native architectures'):
                     publish.publish(GLIBC, assets, {'build_id': 'example'}, 'build-example')
                 upload.assert_not_called()
-                self.assertEqual(1, run.call_count)
+                run.assert_not_called()
 
     def test_public_reads_name_themselves_and_treat_only_404_as_absent(self):
         response = MagicMock()
@@ -241,7 +262,11 @@ class ReleaseGate(unittest.TestCase):
             def upload(pkg, path, key, immutable=True, content_type=None):
                 order.append(key)
                 uploads[key] = (Path(path).read_bytes(), immutable, content_type)
-            with patch.object(publish, 'run', side_effect=lambda *args: order.append(args[:3])), \
+            current = {'id': 42, 'assets': [{'name': p.name} for p in assets.iterdir()]}
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/repo'}), \
+                 patch.object(publish, 'run', side_effect=lambda *args: order.append(args[:4])), \
+                 patch.object(publish, 'release', return_value=current), \
+                 patch.object(publish, 'download_asset'), \
                  patch.object(publish, 'validate'), \
                  patch.object(publish, 'stable', side_effect=lambda pkg, p, a, k, w: (p / a / 'APKINDEX.tar.gz', [])), \
                  patch.object(publish, 'merge_index'), \
@@ -254,7 +279,7 @@ class ReleaseGate(unittest.TestCase):
             listing, immutable, kind = uploads['releases.json']
             self.assertEqual(([notes.entry(made)], False, 'application/json'), (json.loads(listing), immutable, kind))
             self.assertEqual('text/html; charset=utf-8', uploads['index.html'][2])
-            self.assertLess(order.index('index.html'), order.index(('gh', 'release', 'edit')))
+            self.assertLess(order.index('index.html'), order.index(('gh', 'api', '--method', 'PATCH')))
 
     def test_control_signature_is_required_and_tampering_is_rejected(self):
         def member(files):

@@ -151,13 +151,12 @@ keep their required capabilities there without host root. The helper refuses a
 self-hosted agent running as host root. This is a user namespace, not a disposable
 machine: builds still have the runner account's access to files and the network.
 
-Deployment environments allow only the `main` branch. When both the original actor
-and the current triggering actor are `tstromberg`, builds use `ci-owner` or
-`release-owner`, and feed updates and publication use `release-owner`. Those two
-environments have no required reviewer. Other actors, including another user
-rerunning an owner's run, use the approval-gated `ci` and `release` environments.
-Repository and organization secrets must remain available to the owner environments;
-environment-specific secrets need provisioning in both corresponding environments.
+Deployment environments allow only the `main` branch. Production builds, feed
+updates and publication use the `release` environment, which holds their signing
+and storage credentials. It has no required reviewer: successful native builds
+and package validation gate automatic publication. Manual test builds use `ci`.
+Keep branch restrictions and credentials on these existing environments; no
+duplicate owner environments or copies of their secrets are needed.
 
 ## Adding a package
 
