@@ -11,7 +11,7 @@ Consumers use one feed: **https://dist.werewolf-linux.org/apk/hardened**, with
 | Package | Follows | Policy |
 |---|---|---|
 | [glibc](packages/glibc) | newest `glibc-2.*` | libc ignores its environment, no loader injection |
-| [php](packages/php) | newest `php-8.*` | no PEAR/Phar; exec, native, deserialize, inline and writable scripts require allowances |
+| [php](packages/php) | newest `php-8.*` | no PEAR/Phar; exec, native, deserialize, inline, uploads and writable scripts require allowances |
 | [openjdk](packages/openjdk) | newest `openjdk-*` | no deserialize or native (Unsafe, FFM, JNI) unless allowed |
 | [python](packages/python) | newest `python-3.*` | no environment, user site, native, deserialize, inline or writable scripts unless allowed |
 | [node](packages/node) | newest `nodejs-*` | no npm, inspector or SEA; exec, native, inline and writable modules require allowances |
@@ -60,10 +60,16 @@ actual execution paths. Current differences remain explicit:
 | `exec` runtime floor | leash only | yes | leash only | yes, including package scripts |
 | `inline` | argv/stdin | argv/stdin, eval, generated streams | deferred | argv/stdin, worker eval, data-URL code |
 | `writable-source` | main script | compiled files | deferred | ordinary main/dependency code, disk cache |
-| `deserialize` | pickle globals | object reconstruction | ObjectInputStream | no equivalent object-gadget API |
+| `deserialize` | pickle globals | `unserialize()` objects | ObjectInputStream | no equivalent object-gadget API |
+| `upload` | no runtime upload API | multipart parsing and upload moves | no runtime upload API | no runtime upload API |
+| `upload-progress` | no equivalent | session upload-progress callbacks | no equivalent | no equivalent |
 
 PHP gates string compilation with `inline` and verifies every compiled file by
-its opened descriptor, including OPcache hits. In-process code provenance in the
+its opened descriptor, including OPcache hits. `php:upload` permits multipart parsing
+(including text-only forms) and upload moves; ordinary URL-encoded forms need no grant.
+It does not grant execution of uploaded code or restrict applications that save raw
+request bodies themselves. Session upload progress also needs `php:upload-progress`,
+checked at the start of each multipart body. In-process code provenance in the
 other runtimes (`eval`, `vm`, generated classes and custom loaders) remains separate
 work. These defaults complement the service's kernel restrictions.
 

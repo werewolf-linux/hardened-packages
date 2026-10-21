@@ -1,4 +1,4 @@
-"""PHP: Wolfi's newest stable PHP, with seven policy patches (README.md).
+"""PHP: Wolfi's newest stable PHP, with runtime policy patches (README.md).
 
 The hooks scripts/packages.py names. Packages keep Wolfi's names; their epoch
 sorts above every Wolfi rebuild of the same PHP release."""
@@ -42,7 +42,7 @@ PROBE_PHP, PROBE_SH = 'WEREWOLF_PROBE_PHP', 'WEREWOLF_PROBE_SH'
 # Capability groups granted in every test environment so Wolfi's own tests
 # (and the subpackages') run `php`, scripts and unserialize; the probe clears
 # them and proves deny-by-default. PHP has no `environment` group.
-GROUPS = ['exec', 'native', 'deserialize', 'inline', 'writable-source']
+GROUPS = ['exec', 'native', 'deserialize', 'inline', 'writable-source', 'upload', 'upload-progress']
 
 def grant_all():
     return (runtime.build_root() + 'mkdir -p /etc/runtime-hardening/allow/all/php\n'

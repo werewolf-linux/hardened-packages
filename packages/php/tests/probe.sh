@@ -190,6 +190,133 @@ kill "$server_pid"
 wait "$server_pid" 2>/dev/null || true
 server_pid=
 
+# The multipart parser is shared by automatic POST handling and
+# request_parse_body(). Keep it shut before callbacks or temporary files exist.
+mkdir "$work/upload-tmp" "$work/progress"
+cat > "$work/upload.php" <<'PHP'
+<?php
+$post = $_POST;
+$files = $_FILES;
+if ($_SERVER['REQUEST_METHOD'] === 'PUT' || isset($_GET['parse'])) {
+    try {
+        [$post, $files] = request_parse_body(['max_file_uploads' => 5]);
+    } catch (RequestParseBodyException $error) {
+        echo str_contains($error->getMessage(), 'php:upload') ? 'refused' : 'wrong exception';
+        return;
+    }
+}
+$file = $files['upload']['tmp_name'] ?? '';
+$uploaded = $file !== '' && is_uploaded_file($file);
+if (isset($_GET['revoke'])) {
+    unlink(trim(file_get_contents(__DIR__ . '/upload-allowance')));
+}
+$moved = $uploaded && @move_uploaded_file($file, __DIR__ . '/uploaded');
+echo json_encode(['post' => $post['note'] ?? null, 'files' => count($files),
+                  'uploaded' => $uploaded, 'moved' => $moved]);
+PHP
+printf '%s\n' "$base/upload" > "$work/upload-allowance"
+cat > "$work/move-upload.php" <<'PHP'
+<?php
+echo @move_uploaded_file(__FILE__, __DIR__ . '/should-not-exist') ? 'moved' : 'refused';
+PHP
+expect 'upload moves are denied and logged even when suppressed' refused "$php" "$work/move-upload.php"
+grep -F '"group":"upload"' "$work/err" | grep -F '"operation":"move_uploaded_file"'
+
+# Explicitly enabling PHP's ordinary settings cannot supply the allowance.
+"$php" -d file_uploads=1 -d display_errors=stderr -d log_errors=0 \
+    -d "upload_tmp_dir=$work/upload-tmp" -d "session.save_path=$work/progress" \
+    -d session.upload_progress.enabled=1 -d session.upload_progress.cleanup=0 \
+    -S "127.0.0.1:$port" -t "$work" >"$work/upload-server.log" 2>&1 &
+server_pid=$!
+ready=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS --max-time 1 -o /dev/null "http://127.0.0.1:$port/child.php"; then ready=true; break; fi
+    sleep 0.1
+done
+[ "$ready" = true ] || { cat "$work/upload-server.log" >&2; exit 1; }
+
+multipart() {
+    method=$1; endpoint=${2:-upload.php}
+    curl -fsS --max-time 5 -X "$method" -b PHPSESSID=uploadprobe \
+        -F PHP_SESSION_UPLOAD_PROGRESS=probe -F note=plain \
+        -F "upload=@$work/child.php;filename=payload.php" \
+        "http://127.0.0.1:$port/$endpoint"
+}
+no_upload='{"post":null,"files":0,"uploaded":false,"moved":false}'
+yes_upload='{"post":"plain","files":1,"uploaded":true,"moved":true}'
+expect 'POST multipart is refused without upload' "$no_upload" multipart POST
+expect 'PUT request_parse_body cannot bypass upload' refused multipart PUT
+expect 'text-only multipart also stays outside the parser' "$no_upload" \
+    curl -fsS --max-time 5 -F note=plain "http://127.0.0.1:$port/upload.php"
+expect 'a malformed boundary is refused before multipart parsing' "$no_upload" \
+    curl -fsS --max-time 5 -H 'Content-Type: multipart/form-data' \
+        --data-binary invalid "http://127.0.0.1:$port/upload.php"
+expect 'ordinary URL-encoded forms still work' \
+    '{"post":"plain","files":0,"uploaded":false,"moved":false}' \
+    curl -fsS --max-time 5 -d note=plain "http://127.0.0.1:$port/upload.php"
+test -z "$(ls -A "$work/upload-tmp")"
+test -z "$(ls -A "$work/progress")"
+test ! -e "$work/uploaded"
+grep -F '"group":"upload"' "$work/upload-server.log" | grep -F '"operation":"parse"'
+
+: > "$work/target"
+ln -s "$work/target" "$base/upload"
+expect 'an upload allowance symlink is refused' "$no_upload" multipart POST
+revoke upload
+grant upload
+expect 'POST uploads and moves return with upload alone' "$yes_upload" multipart POST
+cmp "$work/child.php" "$work/uploaded"
+test -z "$(ls -A "$work/progress")"
+grep -F '"group":"upload-progress"' "$work/upload-server.log" | grep -F '"operation":"session.upload_progress"'
+ln -s "$work/target" "$base/upload-progress"
+expect 'a symlink cannot enable upload progress' "$yes_upload" multipart POST
+test -z "$(ls -A "$work/progress")"
+revoke upload-progress
+grant upload-progress
+expect 'both grants permit session upload progress' "$yes_upload" multipart POST
+grep -q upload_progress_probe "$work/progress/sess_uploadprobe"
+rm -f "$work/progress/sess_uploadprobe"
+revoke upload
+expect 'upload-progress alone cannot enable uploads' "$no_upload" multipart POST
+test -z "$(ls -A "$work/progress")"
+grant upload
+revoke upload-progress
+expect 'progress revocation preserves ordinary uploads' "$yes_upload" multipart POST
+test -z "$(ls -A "$work/progress")"
+expect 'PUT uploads return through request_parse_body' "$yes_upload" multipart PUT
+cmp "$work/child.php" "$work/uploaded"
+expect 'upload does not grant exec, native, deserialize or phar' "$closed" report
+rm -f "$work/uploaded"
+expect 'revocation after parsing prevents an upload move' \
+    '{"post":"plain","files":1,"uploaded":true,"moved":false}' multipart POST 'upload.php?revoke'
+test ! -e "$work/uploaded"
+grep -F '"group":"upload"' "$work/upload-server.log" | grep -F '"operation":"move_uploaded_file"'
+expect 'a running server observes upload revocation' "$no_upload" multipart POST
+expect 'explicit parsing also observes upload revocation' refused multipart PUT
+kill "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+server_pid=
+
+# Disabling automatic POST handling must not bypass the explicit parsing guard.
+"$php" -d enable_post_data_reading=0 -d display_errors=stderr \
+    -S "127.0.0.1:$port" -t "$work" >"$work/explicit-server.log" 2>&1 &
+server_pid=$!
+ready=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS --max-time 1 -o /dev/null "http://127.0.0.1:$port/child.php"; then ready=true; break; fi
+    sleep 0.1
+done
+[ "$ready" = true ] || { cat "$work/explicit-server.log" >&2; exit 1; }
+expect 'explicit POST parsing still needs upload' refused \
+    curl -fsS --max-time 5 -F "upload=@$work/child.php" "http://127.0.0.1:$port/upload.php?parse"
+grant upload
+expect 'explicit POST parsing returns with upload' "$yes_upload" \
+    curl -fsS --max-time 5 -F note=plain -F "upload=@$work/child.php" "http://127.0.0.1:$port/upload.php?parse"
+revoke upload
+kill "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+server_pid=
+
 # exec, native and deserialize each return with their group alone.
 for group in exec native deserialize; do
 	grant "$group"

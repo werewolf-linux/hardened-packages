@@ -36,6 +36,11 @@ FPM and extension build options and tests.
      Failed provenance checks refuse execution. Symlinks are judged by the opened
      target. The compiler guard installs after OPcache startup, outside cache hits;
      the stream opener also guards preload compilation during startup.
+  10. `upload` gates multipart parsing before boundaries, temporary files and progress
+      callbacks, for automatic POST handling and `request_parse_body()`. It also gates
+      `move_uploaded_file()`, rechecking the allowance when a file is moved.
+      Session progress processing separately needs `upload-progress`, checked before
+      progress state is allocated for each multipart body, even if its INI setting is on.
 - **Packages**: keep CLI, FPM, their configuration, development headers and the
   extensions current Werewolf forms use. Headers support building native extensions
   such as APCu and Redis for this PHP. Omit Apache's `mod_php`, CGI, phpdbg, PEAR/PECL
@@ -55,7 +60,8 @@ FPM and extension build options and tests.
   its function back. The omitted Tidy extension's test and test dependency are
   removed. The probe verifies that Phar's extension, class and wrapper remain absent,
   even with a Phar allowance. Probes exercise includes, source symlinks, stream
-  wrappers, suppressed eval, stdin, and a warm OPcache after allowance revocation.
+  wrappers, suppressed eval, stdin, a warm OPcache and multipart POST/PUT uploads,
+  including symlink grants, explicit parsing and allowance revocation before moves.
 - **Packaging**: epoch `1000 × policy.json revision + Wolfi epoch` sorts above every
   Wolfi rebuild; each package provides `wolfi-origin:php-8.5:VERSION-rEPOCH` for CVE
   matching. Derivation stops for review when the checkout, Wolfi's patches, a removed
@@ -68,6 +74,9 @@ FPM and extension build options and tests.
   function"; a form that needs one declares `allow: [php:exec]` in `form.yaml`.
 - `unserialize($data)` without `allowed_classes` yields `__PHP_Incomplete_Class` for
   objects; name the classes, or declare `allow: [php:deserialize]`.
+- File uploads and text-only multipart forms need `allow: [php:upload]`; `php.ini`
+  cannot grant it. URL-encoded forms still work. This grants no code execution and
+  does not restrict applications that read and save raw request bodies themselves.
 - Phar is unavailable, including `phar://` and tools such as `composer.phar`.
   Our current app recipes use releases with dependencies already included.
 - `PHPRC` and `PHP_INI_SCAN_DIR` do nothing; put settings in the image's `php.ini`.
