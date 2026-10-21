@@ -188,7 +188,8 @@ class Derivation(unittest.TestCase):
                 verify.check(PHP, upstream, relaxed)
 
     def test_the_probe_cannot_end_its_heredoc_early_or_use_melange_variables(self):
-        for text in ['${{package.name}}', PHP.hooks.PROBE_PHP, PHP.hooks.PROBE_SH]:
+        for text in ['${{package.name}}', PHP.hooks.PROBE_PHP, PHP.hooks.PROBE_SH,
+                     PHP.hooks.PROBE_CAPABILITIES]:
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 shutil.copytree(ROOT / 'packages/php', root / 'packages/php', ignore=shutil.ignore_patterns('__pycache__'))

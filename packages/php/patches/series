@@ -13,3 +13,6 @@
 0013-gate-evaluated-code.patch
 0014-upload-allowance.patch
 0015-upload-progress-allowance.patch
+0016-optional-capability-functions.patch
+0017-mail-exec-allowance.patch
+0018-native-library-loaders.patch

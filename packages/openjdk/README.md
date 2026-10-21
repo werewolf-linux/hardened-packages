@@ -1,95 +1,75 @@
-# openjdk
+# OpenJDK
 
-Werewolf's OpenJDK: Wolfi's newest stable `openjdk-27` recipe, captured unchanged,
-plus policy patches
-([design](https://github.com/werewolf-linux/werewolf/blob/main/docs/design/hardened-interpreters.md)).
-Packages keep Wolfi's names, so forms that install `openjdk-27` or its `-jre` and
-`-default-jdk` subpackages get it.
+Wolfi's newest stable OpenJDK recipe with runtime restrictions; currently `openjdk-27`.
 
-## Differences from Wolfi's build
+## Use and allowances
 
-Same as Wolfi: source commit, Wolfi's patch, toolchain, configure options, JDK/JRE
-image builds and the retained packages' tests.
+Werewolf: add `openjdk-27-jre` and `openjdk-27-default-jvm` to `packages` for services;
+use `openjdk-27`/`openjdk-27-default-jdk` for compilation. Wolfi, after [feed setup](../../docs/usage.md#install):
 
-- **Source**: the locked commit is fetched from `jdk27u`, then from mainline `jdk`,
-  which holds each GA tag, in place of Wolfi's checkout.
-- **Packages**: keep `openjdk-27` (the full JDK), `openjdk-27-jre`,
-  `openjdk-27-default-jdk` and `openjdk-27-default-jvm`. App forms install the JRE;
-  application builds need the JDK, and the selectors support the usual tool paths.
-  Omit `-demos`, `-jmods` and `-oci-entrypoint-compat`: none has a current consumer.
-  Demo files are discarded from the JDK before packaging; the separate `jmods`
-  build target and container entrypoint download are removed. The JVM's normal JIT
-  remains part of both the JDK and JRE. New subpackages require an identified use case.
-- **Patches** (`patches/series`), applied after Wolfi's:
-  1. HotSpot ignores `_JAVA_OPTIONS` and `JAVA_TOOL_OPTIONS`; the launcher ignores
-     `JDK_JAVA_OPTIONS` and `JDK_ALTERNATE_VM`, which loads any directory's `libjvm.so`.
-  2. `DisableAttachMechanism` defaults to true: no `jcmd`, `jstack` or agent attach.
-  3. `jdk.internal.misc.WerewolfAllowance` reads allowances: an allowance is a regular
-     file, never a link, in `/etc/runtime-hardening/allow/<ns>/java` or `.../all/java`.
-  4. `ObjectInputStream` refuses every class but primitive arrays, as the filter `!*`
-     would, unless `deserialize` is allowed. No filter, filter factory or
-     `jdk.serialFilter` takes this back.
-  5. `native` gates reaching native code or memory as one group: `sun.misc.Unsafe`
-     memory access is denied whatever `--sun-misc-unsafe-memory-access` says, and
-     illegal
-     native access (JNI, FFM restricted methods) is denied whatever
-     `--illegal-native-access` says, with `--enable-native-access` granting nothing. A
-     JAR manifest's `Enable-Native-Access` still grants, as the image's own jars may.
-- **Tests**: Wolfi's tests, then `tests/probe.sh` with `tests/Probe.java`, which check
-  each protection, that the environment and argv lift none, that a manifest still
-  grants native access, and that each allowance, and only a regular file, takes back
-  what it names and nothing else.
-- **Allowances**: a capability group is an empty file, never a symlink, at
-  `/etc/runtime-hardening/allow/<ns>/java/GROUP` or `.../all/java/GROUP`, read with
-  `Files.isRegularFile(NOFOLLOW_LINKS)`. `<ns>` is the service from `/proc/self/cgroup`.
-- **Packaging**: epoch `1000 × policy.json revision + Wolfi epoch` sorts above every
-  Wolfi rebuild; each package provides `wolfi-origin:openjdk-27:VERSION-rEPOCH` for CVE
-  matching. Derivation stops for review when the checkout, the patch order, the test
-  environment, image build step, subpackage names or the package identity changes.
+```sh
+apk add openjdk-27-jre@hardened openjdk-27-default-jvm@hardened
+```
 
-## Behavior changes for applications
+Run `java -jar /usr/lib/app/app.jar` as a non-root user. Werewolf's normal JVM JIT
+needs top-level `allow: [jit]`. Add `allow: [java:native]` to the existing service
+for native libraries, or create `/etc/runtime-hardening/allow/SERVICE/java/native`
+on Wolfi. The namespace is `java`, not `openjdk`.
+See [grant scope and restart instructions](../../docs/usage.md#grant-an-allowance).
 
-- VM creation refuses effective UID 0, including through `JNI_CreateJavaVM`.
-  Start the JVM after dropping root. The shared build-only marker described in the
-  repository README is absent from every shipped APK.
-- `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS` and `JDK_ALTERNATE_VM` have
-  no effect. Put the options on the command line or in an `@argfile` the command names.
-- `--enable-native-access` on the command line grants nothing; use
-  `allow: [java:native]` or an `Enable-Native-Access` manifest entry.
-- Libraries that reach native code or memory, `sun.misc.Unsafe`, the Foreign Function
-  and Memory API or JNI (older Netty, Kryo, Chronicle, Kafka, zstd-jni), need
-  `allow: [java:native]`.
-- RMI, JMX remoting, and anything that reads Java serialization need
-  `allow: [java:deserialize]`.
-- `jcmd`, `jstack`, `jmap` and attach agents need the target started with
-  `-XX:-DisableAttachMechanism`; that flag opens attach for that process alone.
+## Patches
 
-`inline` (jshell) and `writable-source` (a class or jar on a writable mount) are not
-yet gated for Java: jshell goes with the jlink JRE and writable code with the phase-2
-`defineClass` seal, both deferred (see the design doc). Packages hold nothing under
-`/etc/runtime-hardening`.
+| Patch | One-line change | Allowance / policy |
+|---|---|---|
+| [0001](patches/0001-ignore-environment-options.patch) | Ignore `_JAVA_OPTIONS`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `JDK_ALTERNATE_VM`. | Always denied |
+| [0002](patches/0002-disable-attach-by-default.patch) | Default `DisableAttachMechanism` to true. | Target JVM flag `-XX:-DisableAttachMechanism` |
+| [0003](patches/0003-werewolf-allowances.patch) | Read and cache regular allowance files from the service or `all` namespace. | Always on |
+| [0004](patches/0004-deserialization-refused.patch) | Reject nonprimitive classes checked by `ObjectInputStream`, regardless of serialization filters. | `deserialize` |
+| [0005](patches/0005-unsafe-memory-access-denied.patch) | Deny `sun.misc.Unsafe` memory access regardless of the requested Unsafe mode. | `native` |
+| [0006](patches/0006-native-access-denied.patch) | Deny illegal JNI/FFM native access and ignore command-line native grants. | `native`; JAR manifest native grants still work |
+| [0007](patches/0007-refuse-effective-root.patch) | Refuse effective UID 0 at VM creation, including `JNI_CreateJavaVM`. | Always denied |
+| [0008](patches/0008-log-denials-to-stderr.patch) | Emit JSON denial records directly to stderr. | Always on |
 
-## Still read from the environment
+`native` restores upstream native-access controls; `--enable-native-access`,
+`--illegal-native-access` and `--sun-misc-unsafe-memory-access` then apply normally.
+A JAR's `Enable-Native-Access` manifest grants native access without the marker;
+it does not restore Unsafe memory access. Primitive arrays remain deserializable.
+Allowance results are cached: restart the JVM after every allowance change.
 
-- `CLASSPATH`, when no `-cp` or `-jar` is given; set the class path explicitly.
-- `JDK_AOT_VM_OPTIONS`, only with `-XX:AOTMode=create`.
-- `_JAVA_LAUNCHER_DEBUG`, which traces the launcher to standard output.
-- `_JAVA_SPLASH_FILE` and `_JAVA_SPLASH_JAR`, a splash image, shown only with a display.
+## Debug
 
-## Deferred
+Use [stderr denial records](../../docs/usage.md#debug-a-refusal) to identify the group.
 
-- A jlink-built runtime without `jdk.attach`, `java.rmi`, `java.management.rmi` and
-  `jdk.jdwp.agent`; today these modules ship, and only argv or an allowance opens them.
-  Revisit a separate `-jmods` package when a concrete runtime build needs it; Wolfi's
-  linkable-runtime build and existing jlink tests remain enabled.
+| Symptom | Fix |
+|---|---|
+| `InvalidClassException` while reading Java serialization | Grant `java:deserialize`, then retain application serialization filters. RMI/JMX remoting may need this too. |
+| Unsafe memory operation denied | Grant `java:native`; an argv option or native-access manifest alone does not unlock Unsafe. |
+| JNI/FFM restricted method denied despite `--enable-native-access` | Grant `java:native`, then set the required JVM native-access options; inspect the log's target module/method. |
+| Netty/Kryo/Chronicle/Kafka/zstd-jni native path fails | Confirm the denied operation; grant `java:native` if that path is required. |
+| `jcmd`, `jstack`, `jmap` or attach agent cannot attach | Restart the target with `-XX:-DisableAttachMechanism`; check UID and OS attach permissions. |
+| JVM options in environment have no effect | Put options on argv or in an explicit `@argfile`. There is no `java:environment` grant. |
+| Alternate VM environment setting ignored | Use explicit `-XXaltjvm=PATH` if required; the argv mechanism remains. |
+| Startup refuses root | Drop effective UID before VM creation; no production allowance exists. |
+| Executable-memory failure on Werewolf | Check top-level `jit` and kernel policy; `java:native` does not enable JIT mappings. |
 
-## Building
+Some exception text names the obsolete `/etc/werewolf/allow/java` path; use
+`/etc/runtime-hardening/allow/SERVICE/java/GROUP` as above.
 
-`make PACKAGE=openjdk refresh check derive prepare build` captures Wolfi's recipe,
-verifies it, applies every patch and builds with Melange ([README](../../README.md)).
-Unit tests, from the repository root:
+## Remaining behavior and build differences
 
-    python3 -m unittest discover -s packages/openjdk/tests -p 'test_*.py'
+`CLASSPATH` still applies without `-cp`/`-jar`; set the class path explicitly.
+`JDK_AOT_VM_OPTIONS` still applies with `-XX:AOTMode=create`; `_JAVA_LAUNCHER_DEBUG`
+still traces the launcher; `_JAVA_SPLASH_FILE`/`_JAVA_SPLASH_JAR` still select splash images.
+`inline`/`writable-source` names accepted by forms have no Java enforcement yet:
+jshell, writable classes/JARs, generated classes and custom loaders remain available.
+Process execution remains subject to OS/Werewolf policy, without a Java `exec` gate.
 
-Patches are GPL-2.0-only WITH Classpath-exception-2.0, as OpenJDK; Wolfi inputs keep
-their license.
+Keep Wolfi's commit, patches, configure options, toolchain, JDK/JRE builds and JIT.
+Fetch the locked commit from `jdk27u`, with mainline `jdk` as fallback.
+Ship the JDK, JRE and default-jdk/default-jvm selectors. Omit demos, the separate
+jmods package/build target and OCI-entrypoint compatibility/download; remove demo files.
+Linkable-runtime builds and jlink tests remain. Attach, RMI, management-RMI and
+JDWP modules still ship; the package is not a reduced jlink runtime.
+Epoch is `1000 × policy revision + Wolfi epoch`; `wolfi-origin` preserves CVE matching.
+Retained Wolfi tests and [probes](tests/probe.sh) check grants, manifests and refusals.
+[Build instructions](../../README.md#building-locally); patches: GPL-2.0-only WITH Classpath-exception-2.0.

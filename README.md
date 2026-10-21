@@ -10,15 +10,20 @@ Consumers use one feed: **https://dist.werewolf-linux.org/apk/hardened**, with
 
 | Package | Follows | Policy |
 |---|---|---|
-| [glibc](packages/glibc) | newest `glibc-2.*` | libc ignores its environment, no loader injection |
-| [php](packages/php) | newest `php-8.*` | no PEAR/Phar; exec, native, deserialize, inline, uploads and writable scripts require allowances |
-| [openjdk](packages/openjdk) | newest `openjdk-*` | no deserialize or native (Unsafe, FFM, JNI) unless allowed |
-| [python](packages/python) | newest `python-3.*` | no environment, user site, native, deserialize, inline or writable scripts unless allowed |
-| [node](packages/node) | newest `nodejs-*` | no npm, inspector or SEA; exec, native, inline and writable modules require allowances |
+| [glibc](packages/glibc/README.md) | newest `glibc-2.*` | libc ignores its environment, no loader injection |
+| [php](packages/php/README.md) | newest `php-8.*` | no PEAR/Phar; execution, uploads and optional OS/diagnostic features require allowances |
+| [openjdk](packages/openjdk/README.md) | newest `openjdk-*` | object deserialization and native access restricted; see manifest exception |
+| [python](packages/python/README.md) | newest `python-3.*` | no user site; environment, ctypes, pickle globals, inline and writable main scripts gated |
+| [node](packages/node/README.md) | newest `nodejs-*` | no npm, inspector or SEA; exec, native, inline and writable modules require allowances |
+| [libffi](ports/libffi/README.md) | standalone 3.8.0 port | static callback trampolines for MDWE; local overlay, outside the feed |
+
+Each package guide covers installation on Werewolf/Wolfi, every patch and allowance,
+build changes and troubleshooting. Start with [feed setup, grants and denial logs](docs/usage.md).
 
 Package snapshots and release notes remain under `apk/NAME/builds/BUILD-ID/`.
-Legacy `apk/NAME` feeds are maintained for compatibility. Packages keep Wolfi's names;
-our version outranks the Wolfi build it rebuilds, and each provides
+Legacy `apk/NAME` feeds are maintained for compatibility. Runtimes keep Wolfi's names;
+glibc uses `glibc-neutered-*` names and provides/replaces Wolfi's names.
+Our version outranks the Wolfi build it rebuilds, and each feed package provides
 `wolfi-origin:NAME:VERSION` so Werewolf's updater matches Wolfi's CVE fixes. Allowances
 are grouped by capability, pledge-style: an empty file at
 `/etc/runtime-hardening/allow/<ns>/LANG/GROUP`, or `.../all/LANG/GROUP` for every
@@ -56,13 +61,18 @@ actual execution paths. Current differences remain explicit:
 | Capability | Python | PHP | Java | Node |
 |---|---|---|---|---|
 | Effective-root startup refusal | yes | yes | yes | yes |
-| `native` | ctypes | `dl` | Unsafe, JNI, FFM | addons, FFI, WASI, native loaders |
+| `native` | ctypes | `dl`, SQLite loaders, optional FFI | Unsafe, JNI, FFM | addons, FFI, WASI, native loaders |
 | `exec` runtime floor | leash only | yes | leash only | yes, including package scripts |
 | `inline` | argv/stdin | argv/stdin, eval, generated streams | deferred | argv/stdin, worker eval, data-URL code |
 | `writable-source` | main script | compiled files | deferred | ordinary main/dependency code, disk cache |
 | `deserialize` | pickle globals | `unserialize()` objects | ObjectInputStream | no equivalent object-gadget API |
 | `upload` | no runtime upload API | multipart parsing and upload moves | no runtime upload API | no runtime upload API |
 | `upload-progress` | no equivalent | session upload-progress callbacks | no equivalent | no equivalent |
+| `namespace` | not gated | `pcntl_unshare`, `pcntl_setns` | not gated | not gated |
+| `process` | not gated | fork, session/process group changes | not gated | not gated |
+| `listen` | not gated | stream socket servers and accepts | not gated | not gated |
+| `special-files` | not gated | FIFOs and special nodes | not gated | not gated |
+| `diagnostics` | not gated | `phpinfo()`, CLI `-i` | not gated | not gated |
 
 PHP gates string compilation with `inline` and verifies every compiled file by
 its opened descriptor, including OPcache hits. `php:upload` permits multipart parsing

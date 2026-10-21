@@ -1,74 +1,69 @@
-# python
+# Python
 
-Werewolf's CPython: Wolfi's newest stable `python-3.15` recipe, captured unchanged,
-plus policy patches
-([design](https://github.com/werewolf-linux/werewolf/blob/main/docs/design/hardened-interpreters.md)).
-Packages keep Wolfi's names, so forms that install `python-3.15` or `python3` get it.
+Wolfi's newest stable CPython recipe with runtime restrictions; currently `python-3.15`.
 
-## Differences from Wolfi's build
+## Use and allowances
 
-Interpreter preinitialization refuses effective UID 0, including embedded Python.
-Start it after dropping root. The repository README describes the build-only marker;
-the APKs cannot contain it or grant their own allowances.
+Werewolf: add `python-3.15` to `packages`; migrate forms pinned to older streams.
+Wolfi, after [feed setup](../../docs/usage.md#install):
 
-Same as Wolfi: source commit, Wolfi's patches, toolchain, configure options but one,
-the ordinary interpreter's PGO run, and the retained packages' tests.
+```sh
+apk add python-3.15@hardened
+```
 
-- **Patches** (`patches/series`), applied after Wolfi's and before configuring Python:
-  1. `-E -s` by default: `PYTHON*` variables are ignored unless the image allows the
-     environment; the user site always is.
-  2. No working directory on `sys.path` for `-m`, `-c` or stdin; a script keeps its own
-     directory.
-  3. `native`: `_ctypes` loads only when allowed, since native code removes any check.
-  4. `deserialize`: `pickle` reconstructs an object only when allowed; plain data still
-     unpickles. The pure-Python unpickler is gated too.
-  5. `inline` and `writable-source` (in `main.c`): refuse `-c` and piped stdin, and a
-     main script whose file is on a writable mount (so `/data` and `/tmp` are refused).
-- **Configure**: no `--enable-loadable-sqlite-extensions`; `sqlite3` loads no native
-  code.
-- **Packages**: ship `python-3.15`, `python-3.15-base`, `python-3.15-dev` and
-  `python-3.15-base-dev`. The development packages remain available for application
-  builds: Open WebUI and Paperless already build with Python development headers.
-  Runtime images need only the interpreter. Omit the free-threaded
-  (`python-3.15t`, `python-3.15t-dev`) and experimental JIT packages, their
-  source-tree copies, Tkinter (`-tk`) and manpages (`-doc`). GUI and manpage files
-  are removed before packaging so they cannot fall back into the main or base package.
-  Also omit `-privileged-netbindservice`, which puts `CAP_NET_BIND_SERVICE` on
-  the interpreter file. Werewolf's service launcher grants that capability when
-  a service declares a port below 1024; Python needs no special binary.
-- **Allowances**: a capability group is an empty file, never a symlink, at
-  `/etc/runtime-hardening/allow/<ns>/python/GROUP` or `.../all/python/GROUP`, read with
-  `lstat`. `<ns>` is the service from `/proc/self/cgroup`. The build guest grants every
-  group so CPython builds and its suite passes; packages ship nothing there.
-- **Tests**: Wolfi's tests, then `tests/probe.sh`, which holds each protection and sees
-  each group, and only a regular file, take its own back.
-- **Packaging**: epoch `1000 × policy.json revision + Wolfi epoch` sorts above every
-  Wolfi rebuild; each package provides `wolfi-origin:python-3.15:VERSION-rEPOCH` for CVE
-  matching. Derivation stops for review when the checkout, the patch or clone order,
-  the subpackage names, the removed option or the package identity changes.
+Run `python3 /usr/lib/app/main.py` as a non-root user with code mounted read-only.
+Install dependencies into the image or a virtual environment; `pyvenv.cfg` still works.
+Add `allow: [python:native]` to the existing Werewolf service for ctypes, or create
+`/etc/runtime-hardening/allow/SERVICE/python/native` on Wolfi. Substitute any group
+below; see [grant scope and restart instructions](../../docs/usage.md#grant-an-allowance).
 
-## Behavior changes for applications
+## Patches
 
-- `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUNBUFFERED` and the rest have no
-  effect. Use the matching option (`-u`, `-B`, `-X utf8`) or put code where `sys.path`
-  looks.
-- `pip install --user` and `~/.local` site-packages are not used; use a virtual
-  environment, whose `pyvenv.cfg` still works.
-- `python -c`, a piped-in script, and a script under `/data` or `/tmp` are refused; a
-  form grants `python:inline` or `python:writable-source` to permit one.
-- `import ctypes` raises `ImportError` unless `allow: [python:native]`.
-- `pickle.load` of an object raises `UnpicklingError` unless `python:deserialize`.
-  This does not reach third-party loaders such as PyYAML's `UnsafeLoader`.
-- `sqlite3.Connection` has no `enable_load_extension`.
-- Programs that embed CPython through the legacy `Py_Initialize` keep CPython's defaults
-  for the environment and the user site; the other patches still apply.
+| Patch | One-line change | Allowance / policy |
+|---|---|---|
+| [0001](patches/0001-ignore-environment.patch) | Ignore Python configuration environment variables and disable user site packages. | `environment` restores environment only; user site always disabled |
+| [0002](patches/0002-no-working-directory-path.patch) | Remove working-directory search from `-m`, `-c` and stdin; scripts retain their directory. | Always on |
+| [0003](patches/0003-native.patch) | Refuse loading `_ctypes`. | `native` |
+| [0004](patches/0004-deserialize-pickle.patch) | Gate global/class resolution in C and pure-Python pickle. | `deserialize` |
+| [0005](patches/0005-run-gate.patch) | Refuse `-c`, piped stdin and main scripts on writable mounts. | `inline`, `writable-source` respectively |
+| [0006](patches/0006-refuse-effective-root.patch) | Refuse effective UID 0 during preinitialization, including embedded Python. | Always denied |
+| [0007](patches/0007-log-denials-to-stderr.patch) | Emit JSON denials directly to stderr, including pure-Python pickle failures. | Always on |
 
-## Building
+`environment` is a build-compatibility marker, not a supported Werewolf form grant.
+On Wolfi its file is `.../python/environment`; prefer explicit flags and installed
+modules. Application environment reads remain available. Legacy `Py_Initialize`
+retains CPython's environment/user-site defaults; other applicable checks remain.
 
-`make PACKAGE=python refresh check derive prepare build` captures Wolfi's recipe,
-verifies it, applies every patch and builds with Melange ([README](../../README.md)).
-Unit tests, from the repository root:
+## Debug
 
-    python3 -m unittest discover -s packages/python/tests -p 'test_*.py'
+Use [stderr denial records](../../docs/usage.md#debug-a-refusal) to identify the group.
 
-Patches are PSF-2.0, as CPython; Wolfi inputs keep their license.
+| Symptom | Fix |
+|---|---|
+| `ImportError` importing ctypes | Grant `native`; OS restrictions and shared-library dependencies still apply. |
+| `UnpicklingError` resolving a class/global | Prefer plain data or grant `deserialize` for required object reconstruction. Plain data still unpickles. |
+| `python -c` or piped script refused | Put the script in the image or grant `inline`. |
+| Main script under `/tmp`, `/data` or a writable image layer refused | Mount code read-only or grant `writable-source`; file mode alone does not suffice. |
+| `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUNBUFFERED` ignored | Install modules in the interpreter/venv path; use explicit flags such as `-u`, `-B`, `-X utf8`. |
+| `ModuleNotFoundError` after `pip install --user` or `python -m` | Install into the image/venv; neither `~/.local` nor the working directory is automatically searched. |
+| `sqlite3.Connection.enable_load_extension` absent | SQLite extension loading is compiled out; `native` cannot restore it. |
+| Low-port bind fails | Configure the supervisor's bind capability; Werewolf grants it for a declared port below 1024. |
+| Startup refuses root | Drop effective UID before starting or embedding Python; no production allowance exists. |
+
+The source gate covers the main script, not all imports, `-m` modules, `eval` or
+custom loaders. Interactive input is not gated by `inline`. `native` gates ctypes,
+not every extension module; `deserialize` does not cover third-party unsafe loaders.
+Process execution remains subject to OS/Werewolf policy, without a Python `exec` gate.
+
+## Build differences
+
+Keep Wolfi's commit, patches, toolchain, ordinary interpreter PGO and retained tests.
+Remove `--enable-loadable-sqlite-extensions`; no allowance restores SQLite loading.
+Ship `python-3.15`, `-base`, `-dev`, `-base-dev`; use development packages for builds.
+Omit free-threaded `python-3.15t`/`t-dev`, experimental `-jit`, Tkinter `-tk`,
+manpages `-doc` and their build copies/files. Omit `-privileged-netbindservice`,
+which would attach `CAP_NET_BIND_SERVICE` to the interpreter binary.
+Epoch is `1000 × policy revision + Wolfi epoch`; `wolfi-origin` preserves CVE matching.
+Build guests grant the groups privately; APKs contain no hardening exception files.
+[Installed-package probes](tests/probe.sh) check each grant and reject symlink grants.
+[Build instructions](../../README.md#building-locally); patches: PSF-2.0.

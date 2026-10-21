@@ -36,13 +36,17 @@ OMITTED_EXTENSIONS = {
     'ftp': '--enable-ftp=shared', 'sysvshm': '--enable-sysvshm=shared', 'phar': '--enable-phar=shared'}
 APXS_STEPS = ('Copy httpd.conf before install for apxs', 'Remove httpd.conf after install for apxs')
 PRUNE = 'Remove manpages before splitting packages'
-# The probe checks pcntl's functions, and that Phar is absent even with an allowance.
-PROBE_PACKAGES = ['${{package.name}}-pcntl', 'curl']
+# Exercise the retained optional extensions as well as the core function floor.
+PROBE_PACKAGES = ['${{package.name}}-pcntl', '${{package.name}}-posix',
+                  '${{package.name}}-pdo', '${{package.name}}-pdo_sqlite',
+                  '${{package.name}}-mbstring', 'curl']
 PROBE_PHP, PROBE_SH = 'WEREWOLF_PROBE_PHP', 'WEREWOLF_PROBE_SH'
+PROBE_CAPABILITIES = 'WEREWOLF_PROBE_CAPABILITIES'
 # Capability groups granted in every test environment so Wolfi's own tests
 # (and the subpackages') run `php`, scripts and unserialize; the probe clears
 # them and proves deny-by-default. PHP has no `environment` group.
-GROUPS = ['exec', 'native', 'deserialize', 'inline', 'writable-source', 'upload', 'upload-progress']
+GROUPS = ['exec', 'native', 'deserialize', 'inline', 'writable-source', 'upload', 'upload-progress',
+          'namespace', 'process', 'listen', 'special-files', 'diagnostics']
 
 def grant_all():
     return (runtime.build_root() + 'mkdir -p /etc/runtime-hardening/allow/all/php\n'
@@ -117,14 +121,14 @@ def retained_tests(config):
     return test
 
 def probe(pkg):
-    php = (pkg.dir / 'tests/probe.php').read_text()
-    sh = (pkg.dir / 'tests/probe.sh').read_text()
-    for text in (php, sh):
-        if '${{' in text or PROBE_PHP in text or PROBE_SH in text:
+    files = {'probe.php': PROBE_PHP, 'probe.sh': PROBE_SH, 'capabilities.php': PROBE_CAPABILITIES}
+    script = runtime.root_probe('php', ['php', '-v'])
+    for name, delimiter in files.items():
+        text = (pkg.dir / 'tests' / name).read_text()
+        if '${{' in text or any(marker in text for marker in files.values()):
             raise ValueError('tests/probe.* cannot be embedded in a Melange recipe')
-    return (runtime.root_probe('php', ['php', '-v']) + "cat > /tmp/probe.php <<'" + PROBE_PHP + "'\n" + php + PROBE_PHP + '\n' +
-            "cat > /tmp/probe.sh <<'" + PROBE_SH + "'\n" + sh + PROBE_SH + '\n' +
-            'sh /tmp/probe.sh /tmp/probe.php\n')
+        script += "cat > /tmp/" + name + " <<'" + delimiter + "'\n" + text + delimiter + '\n'
+    return script + 'sh /tmp/probe.sh /tmp/probe.php\n'
 
 def derive(pkg, config, lock):
     original = config['package']['name']

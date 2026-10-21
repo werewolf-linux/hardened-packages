@@ -5,10 +5,12 @@
 # binary and ALLOW another tree, for a dev build off the read-only root.
 set -eu
 probe=$1
+capabilities=$(dirname "$probe")/capabilities.php
 php=${PHP:-php}
 allowdir=${ALLOW:-/etc/runtime-hardening/allow}
 base=$allowdir/all/php
 work=$(mktemp -d)
+work=$(cd "$work" && pwd -P)
 server_pid=
 cleanup() {
     if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi
@@ -69,7 +71,7 @@ report() { "$php" "$probe"; }
 rm -rf "$allowdir"
 grant writable-source
 
-closed='{"deserialize":false,"exec":false,"native":false,"phar":false,"phar_class":false,"phar_extension":false}'
+closed='{"deserialize":false,"diagnostics":false,"exec":false,"listen":false,"native":false,"phar":false,"phar_class":false,"phar_extension":false,"process":false,"special-files":false}'
 expect 'closed: no exec, native, deserialize or phar' "$closed" report
 grep -F '"group":"deserialize"' "$work/err" | grep -F '"detail":"stdClass"'
 
@@ -317,13 +319,113 @@ kill "$server_pid"
 wait "$server_pid" 2>/dev/null || true
 server_pid=
 
-# exec, native and deserialize each return with their group alone.
-for group in exec native deserialize; do
+# Each function group returns alone. Namespace APIs depend on the platform.
+for group in exec native deserialize process listen special-files diagnostics; do
 	grant "$group"
 	expect "$group is taken back alone" \
 		"$(printf '%s' "$closed" | sed 's/"'"$group"'":false/"'"$group"'":true/')" report
 	revoke "$group"
 done
+
+# Optional capabilities are disabled before evaluating arguments, even with
+# an empty disable_functions setting. The same table must log every group.
+expect 'optional functions remain closed despite -d' closed \
+    "$php" -d disable_functions= "$capabilities" floor
+for group in exec namespace process listen special-files diagnostics; do
+    grep -F '"group":"'"$group"'"' "$work/err" >/dev/null
+done
+for group in namespace process listen special-files diagnostics; do
+    ln -s "$work/target" "$base/$group"
+    expect "$group refuses a symlink grant" closed "$php" "$capabilities" floor
+    revoke "$group"
+done
+grant namespace
+expect 'namespace grants do not open process creation' namespace "$php" "$capabilities" namespace
+revoke namespace
+grant process
+expect 'process alone permits fork and detachment' forked "$php" "$capabilities" process
+revoke process
+grant listen
+expect 'listen alone permits creating and accepting a listener' listening "$php" "$capabilities" listen
+revoke listen
+grant special-files
+expect 'special-files alone permits FIFO creation' created "$php" "$capabilities" special-files "$work"
+revoke special-files
+"$php" -i >"$work/info" 2>"$work/err"
+test ! -s "$work/info"
+grep -F '"group":"diagnostics"' "$work/err" >/dev/null
+grant diagnostics
+expect 'diagnostics alone restores phpinfo' information "$php" "$capabilities" diagnostics
+"$php" -i >"$work/info"
+grep -q 'PHP Version' "$work/info"
+revoke diagnostics
+
+# A harmless mail transport proves all three entrypoints cross the helper.
+cat > "$work/sendmail" <<'SH'
+#!/bin/sh
+cat >/dev/null
+printf 'sent\n' >> "$0.sent"
+SH
+chmod +x "$work/sendmail"
+expect 'mail-mode error_log needs exec while file logging works' refused \
+    "$php" -d "sendmail_path=$work/sendmail" "$capabilities" mail-denied "$work"
+test ! -e "$work/sendmail.sent"
+grep -q ordinary-log "$work/ordinary.log"
+grep -F '"group":"exec"' "$work/err" | grep -F '"detail":"error_log"'
+grant exec
+expect 'exec permits both mail functions and mail-mode error_log' sent \
+    "$php" -d "sendmail_path=$work/sendmail" "$capabilities" mail
+test "$(wc -l < "$work/sendmail.sent" | tr -d ' ')" = 3
+expect 'the shared helper observes exec revocation in a running PHP' refused \
+    "$php" -d "sendmail_path=$work/sendmail" "$capabilities" mail-revoke "$base/exec"
+test "$(wc -l < "$work/sendmail.sent" | tr -d ' ')" = 3
+test "$(grep -c '"group":"exec"' "$work/err")" = 3
+
+# No SQLite headers are required: the extension records reaching its entrypoint.
+cat > "$work/loader.c" <<'C'
+#include <stdio.h>
+struct sqlite3;
+struct sqlite3_api_routines;
+int sqlite3_extension_init(struct sqlite3 *db, char **error,
+                          const struct sqlite3_api_routines *api) {
+    (void)db; (void)error; (void)api;
+    FILE *f = fopen(__FILE__ ".loaded", "w");
+    if (!f) return 1;
+    fputs("loaded", f);
+    fclose(f);
+    return 0;
+}
+C
+cc -shared -fPIC -o "$work/loader.so" "$work/loader.c"
+expect 'SQLite queries work while native library loading is denied' refused \
+    "$php" -d "sqlite3.extension_dir=$work" "$capabilities" native-denied "$work"
+grep -F '"group":"native"' "$work/err" | grep -F '"operation":"loadExtension"'
+ln -s "$work/target" "$base/native"
+expect 'SQLite native loading rejects a symlink grant' refused \
+    "$php" -d "sqlite3.extension_dir=$work" "$capabilities" native-denied "$work"
+revoke native
+grant native
+expect 'native permits reaching SQLite extension entrypoints' loaded \
+    "$php" -d "sqlite3.extension_dir=$work" "$capabilities" native-load "$work"
+expect 'SQLite loaders observe native revocation after connecting' refused \
+    "$php" -d "sqlite3.extension_dir=$work" "$capabilities" native-revoke "$work" "$base/native"
+
+# FFI and SQLite3 are not added to the packages. Dev builds that include them
+# exercise their guarded paths too; the shipped driver is PDO SQLite.
+if [ "$("$php" "$capabilities" ffi-present)" = yes ]; then
+    printf '#define FFI_SCOPE "probe"\nint abs(int);\n' > "$work/ffi.h"
+    expect 'ffi.enable cannot bypass native' refused \
+        "$php" -d ffi.enable=1 "$capabilities" ffi-denied "$work/ffi.h"
+    grep -F '"group":"native"' "$work/err" | grep -F '"operation":"ffi"'
+    refuse 'FFI header preloading needs native' php:native \
+        "$php" -d "ffi.preload=$work/ffi.h" "$capabilities" ffi-scope
+    grant native
+    expect 'native permits FFI declarations and header loading' loaded \
+        "$php" -d ffi.enable=1 "$capabilities" ffi-load "$work/ffi.h"
+    expect 'native permits FFI header preloading and scope access' preloaded \
+        "$php" -d "ffi.preload=$work/ffi.h" "$capabilities" ffi-scope
+    revoke native
+fi
 
 # Phar is not built; an allowance cannot restore its extension, class or wrapper.
 grant phar
