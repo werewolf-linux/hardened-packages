@@ -18,7 +18,7 @@ import verify
 HERE = Path(__file__).resolve().parent
 FIXTURE = yaml.safe_load((HERE / 'fixtures/python-3.15.yaml').read_text())
 COMMIT = next(s for s in FIXTURE['pipeline'] if s.get('uses') == 'git-checkout')['with']['expected-commit']
-LOCK = {'recipe': 'python-3.15.yaml', 'version': '3.15.0_git20261010', 'epoch': 0, 'revision': 1,
+LOCK = {'recipe': 'python-3.15.yaml', 'version': '3.15.0_git20261017', 'epoch': 1, 'revision': 1,
         'source_commit': COMMIT}
 
 
@@ -45,14 +45,14 @@ class Derivation(unittest.TestCase):
     def test_wolfi_names_and_a_version_above_every_wolfi_rebuild(self):
         pkg, _, derived = self.derived()
         self.assertEqual('python-3.15', derived['package']['name'])
-        self.assertEqual(1000, derived['package']['epoch'])
-        self.assertEqual('3.15.0_git20261010-r1000', pkg.hooks.full_version(LOCK))
+        self.assertEqual(1001, derived['package']['epoch'])
+        self.assertEqual('3.15.0_git20261017-r1001', pkg.hooks.full_version(LOCK))
         self.assertEqual(['${{package.name}}-base', '${{package.name}}-dev', '${{package.name}}-base-dev'],
                          [s['name'] for s in derived['subpackages']])
         self.assertEqual({'python-3.15', 'python-3.15-base', 'python-3.15-dev', 'python-3.15-base-dev'},
                          publish.package_names(derived))
         for section in [derived['package']] + derived['subpackages']:
-            self.assertIn('wolfi-origin:python-3.15:3.15.0_git20261010-r0', section['dependencies']['provides'])
+            self.assertIn('wolfi-origin:python-3.15:3.15.0_git20261017-r1', section['dependencies']['provides'])
 
     def test_the_locked_commit_is_fetched_in_place_of_wolfis_checkout(self):
         _, _, derived = self.derived()

@@ -30,9 +30,9 @@ the ordinary interpreter's PGO run, and the retained packages' tests.
   `python-3.15-base-dev`. The development packages remain available for application
   builds: Open WebUI and Paperless already build with Python development headers.
   Runtime images need only the interpreter. Omit the free-threaded
-  (`python-3.15t`) and experimental JIT interpreters, their source-tree copies,
-  Tkinter (`-tk`) and manpages (`-doc`). GUI and manpage files are removed before
-  packaging so they cannot fall back into the main or base package.
+  (`python-3.15t`, `python-3.15t-dev`) and experimental JIT packages, their
+  source-tree copies, Tkinter (`-tk`) and manpages (`-doc`). GUI and manpage files
+  are removed before packaging so they cannot fall back into the main or base package.
   Also omit `-privileged-netbindservice`, which puts `CAP_NET_BIND_SERVICE` on
   the interpreter file. Werewolf's service launcher grants that capability when
   a service declares a port below 1024; Python needs no special binary.

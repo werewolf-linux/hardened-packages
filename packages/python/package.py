@@ -20,7 +20,7 @@ PATCHES = 'werewolf/patches'  # in the build context
 REMOVED_OPTION = '--enable-loadable-sqlite-extensions'
 KEPT_SUBPACKAGES = tuple('${{package.name}}' + suffix for suffix in ('-base', '-dev', '-base-dev'))
 OMITTED_SUBPACKAGES = tuple('${{package.name}}' + suffix for suffix in (
-    't', '-jit', '-privileged-netbindservice', '-tk', '-doc'))
+    't', 't-dev', '-jit', '-privileged-netbindservice', '-tk', '-doc'))
 CLONE = 'Clone patched source for no-GIL and JIT builds'
 PRUNE = 'Remove GUI and documentation files before splitting packages'
 ALLOW = 'Allow every runtime-hardening group in the build guest only'
