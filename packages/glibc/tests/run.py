@@ -28,6 +28,16 @@ def main():
     evidence = {'compiler': subprocess.check_output(cc+['--version'], text=True), 'elf': {}}
     options = subprocess.run(cc+['-###', '-O2', '-c', '-x', 'c', '-'], input='', capture_output=True, text=True, check=True)
     evidence['resolved_compiler_options'] = options.stderr
+    # This is independent of the upstream suite's permitted failure count.
+    subprocess.run(['make', '-C', str(build), 'test', 't=elf/tst-werewolf-audit',
+                    'test-wrapper=' + args.runner],
+                   check=True)
+    result = subprocess.run(runner + [str(build/'elf/tst-werewolf-audit')],
+                            capture_output=True, text=True, timeout=30, check=True)
+    undefined = subprocess.check_output(['nm', '-u', str(build/'elf/dl-audit.os')], text=True)
+    assert '_rtld_global' not in undefined, 'audit dispatch still reads loader state'
+    evidence['audit_dispatch'] = {'status': 'PASS', 'output': result.stdout,
+                                  'undefined_symbols': undefined}
     for path in [loader, build/'libc.so']:
         headers = subprocess.check_output(['readelf', '-lW', str(path)], text=True)
         dynamic = subprocess.check_output(['readelf', '-dW', str(path)], text=True)
@@ -97,6 +107,19 @@ def main():
         unwinder = work / 'unwind'
         compile([], unwinder, 'unwind.cc')
         run([unwinder])
+        # Retain IFUNC execution at startup and through later symbol lookup.
+        ifunc = work/'ifunc'
+        compile([], ifunc, 'ifunc.c')
+        run([ifunc])
+        ifunc_dso = work/'ifunc.so'
+        compile(['-shared', '-fPIC', '-DIFUNC_DSO'], ifunc_dso, 'ifunc.c')
+        symbols = subprocess.check_output(['readelf', '-sW', str(ifunc_dso)], text=True)
+        assert any('IFUNC' in line and 'neutered_ifunc' in line
+                   for line in symbols.splitlines()), 'IFUNC fixture lost its resolver'
+        ifunc_load = work/'ifunc-load'
+        compile(['-DIFUNC_LOAD', '-ldl'], ifunc_load, 'ifunc.c')
+        run([ifunc_load, ifunc_dso])
+        evidence['ifunc'] = {'status': 'PASS', 'paths': ['startup', 'dlopen', 'dlmopen', 'dlsym']}
         # Denying LD_BIND_NOW must not undo eager binding of lazy objects.
         unresolved_source = work/'unresolved.c'
         unresolved_source.write_text('extern int neutered_missing_symbol(void);\nint neutered_call(void) { return neutered_missing_symbol(); }\n')
@@ -223,7 +246,7 @@ def main():
                 assert result.returncode == 0, (result.stdout, result.stderr)
         if args.report:
             args.report.write_text(json.dumps(evidence, indent=2)+'\n')
-        print('PASS: ELF hardening, public APIs, C locale, ignored configuration, preload/audit/CLI, ELF tags, built-in converters/NSS, static startup')
+        print('PASS: ELF hardening, public APIs, C locale, ignored configuration, preload/audit/CLI, forged audit state, ELF tags, built-in converters/NSS, static startup')
 
 if __name__ == '__main__':
     main()

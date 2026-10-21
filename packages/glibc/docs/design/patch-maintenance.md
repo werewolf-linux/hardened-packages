@@ -20,7 +20,10 @@ The [FreeBSD Porter's Handbook](https://docs.freebsd.org/en/books/porters-handbo
 
 ## Detailed design
 
-`patches/series` lists four source patches. The fifth protection, nscd removal, uses existing build switches. Headers identify the intended change, inspected base, upstream applicability and audit/design references. Keep allocator/string/math implementations out of these patches.
+`patches/series` lists five source patches. The audit-dispatch patch removes callback
+execution even with forged registration state; nscd removal uses build switches.
+Headers identify the intended change, inspected base, upstream applicability and
+audit/design references. Keep allocator/string/math implementations out of these patches.
 
 `scripts/refresh.py` captures the newest primary stable Wolfi glibc recipe and its complete supporting files under `build/inputs/`. Numeric version discovery follows new release streams automatically; strict patch application and input validation stop incompatible updates. Build identities change when relevant upstream or downstream inputs change.
 

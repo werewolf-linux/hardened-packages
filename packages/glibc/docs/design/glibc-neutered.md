@@ -40,6 +40,13 @@ PostgreSQL migration blocks its rollout: replace the `popen-shim.so` preload in 
 
 Retained loading is bounded by Werewolf's [IPE policy](https://github.com/tstromberg/werewolf/blob/main/docs/design/ipe.md): native executable mappings must come from the selected verified root, including dependencies, explicit `dlopen`/`dlmopen`, and static-linked loading. This is an existing Werewolf integration requirement, not a sixth libc patch. Audit ELF RPATH/RUNPATH, `$ORIGIN`, dependencies, cache entries, and symlinks in the built image; do not authorize writable directories or an untrusted alternate loader. Non-IPE images do not meet the native-code integrity claim. The current strict policy rejects anonymous executable memory, so JIT-dependent forms cannot meet this profile without separate design work; do not silently add an exception.
 
+Audit registration denial is supplemented by removal of internal audit dispatch.
+Forged audit state cannot invoke a callback through those entry points. Normal
+IFUNC CPU dispatch remains enabled. The [xz design][xz-design] separates this
+change from later dependency and resolver admission policy.
+
+[xz-design]: https://github.com/werewolf-linux/werewolf/blob/main/docs/design/xzutils.md
+
 ## Drawbacks
 
 Environment-dependent libc APIs change behavior even though public `getenv` works. C locale affects collation and multibyte conversion; it is not C.UTF-8. External NSS, legacy encodings, profiling injection, and nscd consumers need application work. Private-header macros can affect tools/tests or function definitions; use build guards and explicit exemptions, or choose explicit consumer edits if those are easier to maintain. No patch-size or performance claim is measured yet.
