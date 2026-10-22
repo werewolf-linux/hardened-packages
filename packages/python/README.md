@@ -29,7 +29,7 @@ below; see [grant scope and restart instructions](../../docs/usage.md#grant-an-a
 | [0006](patches/0006-refuse-effective-root.patch) | Refuse effective UID 0 during preinitialization, including embedded Python. | Always denied |
 | [0007](patches/0007-log-denials-to-stderr.patch) | Emit JSON denials directly to stderr, including pure-Python pickle failures. | Always on |
 
-`environment` is a build-compatibility marker, not a supported Werewolf form grant.
+`environment` is intended for build compatibility; Werewolf accepts `python:environment`.
 On Wolfi its file is `.../python/environment`; prefer explicit flags and installed
 modules. Application environment reads remain available. Legacy `Py_Initialize`
 retains CPython's environment/user-site defaults; other applicable checks remain.

@@ -24,7 +24,8 @@ case 'floor':
         'process' => ['pcntl_fork', 'pcntl_rfork', 'pcntl_forkx', 'posix_setsid', 'posix_setpgid'],
         'listen' => ['stream_socket_server', 'stream_socket_accept'],
         'special-files' => ['posix_mkfifo', 'posix_mknod'],
-        'diagnostics' => ['phpinfo'],
+        'debug' => ['phpinfo', 'phpcredits', 'var_dump', 'print_r',
+                    'debug_zval_dump', 'debug_print_backtrace'],
     ];
     foreach ($groups as $functions) {
         foreach ($functions as $function) {
@@ -82,12 +83,76 @@ case 'special-files':
     unlink($argv[2] . '/node');
     echo 'created';
     break;
-case 'diagnostics':
+case 'debug':
     ob_start();
     phpinfo(INFO_GENERAL);
     check(str_contains(ob_get_clean(), 'PHP Version'));
+    foreach (['var_dump', 'debug_zval_dump'] as $dump) {
+        ob_start();
+        $dump(['debug-dump-marker' => 42]);
+        check(str_contains(ob_get_clean(), 'debug-dump-marker'));
+    }
+    check(str_contains(print_r(['debug-print-marker' => 42], true), 'debug-print-marker'));
+    ob_start();
+    print_r(['debug-print-marker' => 42]);
+    check(str_contains(ob_get_clean(), 'debug-print-marker'));
+    ob_start();
+    (function () { debug_print_backtrace(); })();
+    check(str_contains(ob_get_clean(), '#0'));
+    ob_start();
+    phpcredits(CREDITS_GENERAL);
+    check(str_contains(ob_get_clean(), 'PHP Credits'));
+    ob_start();
+    (new ReflectionExtension('standard'))->info();
+    check(str_contains(ob_get_clean(), 'standard'));
     echo 'information';
     break;
+case 'debug-module-denied':
+    ob_start();
+    @(new ReflectionExtension('standard'))->info();
+    check(ob_get_clean() === '');
+    echo 'refused';
+    break;
+case 'debug-ordinary':
+    check(!function_exists('var_dump') && !function_exists('phpinfo'));
+    check(error_log('debug-ordinary-log', 3, $argv[2] . '/debug-ordinary.log'));
+    check(var_export(42, true) === '42');
+    (function () {
+        check(count(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS)) > 0);
+        try { throw new RuntimeException('ordinary-exception'); }
+        catch (RuntimeException $error) { check(count($error->getTrace()) > 0); }
+    })();
+    $handled = false;
+    set_error_handler(function () use (&$handled) { $handled = true; return true; });
+    trigger_error('ordinary-warning', E_USER_WARNING);
+    restore_error_handler();
+    check($handled);
+    echo 'ordinary';
+    break;
+case 'debug-fatal':
+case 'debug-fatal-enable':
+case 'debug-fatal-revoke':
+case 'debug-fatal-quiet':
+    if ($argv[1] === 'debug-fatal-enable') {
+        ini_set('fatal_error_backtraces', '1');
+    }
+    if ($argv[1] === 'debug-fatal-revoke') {
+        check(function_exists('var_dump'));
+        unlink($argv[2]);
+    }
+    if ($argv[1] === 'debug-fatal-quiet') {
+        ini_set('display_errors', '0');
+        ini_set('log_errors', '0');
+        error_reporting(0);
+    }
+    function debug_fatal_probe() { trigger_error('debug-fatal-marker', E_USER_ERROR); }
+    debug_fatal_probe();
+    throw new RuntimeException('fatal error returned');
+case 'debug-oom':
+    // Exercise the policy from the actual allocation-failure path too.
+    ini_set('memory_limit', '16M');
+    str_repeat('x', 32 * 1024 * 1024);
+    throw new RuntimeException('OOM returned');
 case 'mail':
     check(mail('probe@example.invalid', 'probe', 'body'));
     check(mb_send_mail('probe@example.invalid', 'probe', 'body'));

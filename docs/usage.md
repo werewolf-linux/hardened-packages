@@ -31,7 +31,7 @@ Mount application code read-only; `chmod 0444` on a writable mount is insufficie
 
 ## Grant an allowance
 
-In Werewolf, add a supported `RUNTIME:GROUP` to the existing service:
+In Werewolf, add a documented `RUNTIME:GROUP` to the existing service:
 
 ```yaml
 services:
@@ -57,8 +57,8 @@ cgroup namespace exposes only `/`. Symlink allowance files do not grant access.
 Keep the entire allowance tree administrator-owned and read-only to the service;
 the checks rely on the image and supervisor to protect it and the cgroup identity.
 
-For a group your Werewolf builder does not recognize, place the same empty file
-under `forms/FORM/rootfs/etc/runtime-hardening/allow/SERVICE/RUNTIME/GROUP`.
+Werewolf validates names, while each package defines which grants have an effect.
+Alternatively, put the marker under your form's `rootfs/etc/runtime-hardening/allow/`.
 Rebuild, deploy and restart after changing grants. Remove the file or declaration
 and redeploy to revoke; restart also clears cached decisions and loaded native code.
 An allowance does not override PHP settings, JVM/Node permissions, filesystem

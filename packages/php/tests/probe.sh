@@ -71,7 +71,7 @@ report() { "$php" "$probe"; }
 rm -rf "$allowdir"
 grant writable-source
 
-closed='{"deserialize":false,"diagnostics":false,"exec":false,"listen":false,"native":false,"phar":false,"phar_class":false,"phar_extension":false,"process":false,"special-files":false}'
+closed='{"debug":false,"deserialize":false,"exec":false,"listen":false,"native":false,"phar":false,"phar_class":false,"phar_extension":false,"process":false,"special-files":false}'
 expect 'closed: no exec, native, deserialize or phar' "$closed" report
 grep -F '"group":"deserialize"' "$work/err" | grep -F '"detail":"stdClass"'
 
@@ -320,7 +320,7 @@ wait "$server_pid" 2>/dev/null || true
 server_pid=
 
 # Each function group returns alone. Namespace APIs depend on the platform.
-for group in exec native deserialize process listen special-files diagnostics; do
+for group in exec native deserialize process listen special-files debug; do
 	grant "$group"
 	expect "$group is taken back alone" \
 		"$(printf '%s' "$closed" | sed 's/"'"$group"'":false/"'"$group"'":true/')" report
@@ -331,10 +331,10 @@ done
 # an empty disable_functions setting. The same table must log every group.
 expect 'optional functions remain closed despite -d' closed \
     "$php" -d disable_functions= "$capabilities" floor
-for group in exec namespace process listen special-files diagnostics; do
+for group in exec namespace process listen special-files debug; do
     grep -F '"group":"'"$group"'"' "$work/err" >/dev/null
 done
-for group in namespace process listen special-files diagnostics; do
+for group in namespace process listen special-files debug; do
     ln -s "$work/target" "$base/$group"
     expect "$group refuses a symlink grant" closed "$php" "$capabilities" floor
     revoke "$group"
@@ -351,14 +351,75 @@ revoke listen
 grant special-files
 expect 'special-files alone permits FIFO creation' created "$php" "$capabilities" special-files "$work"
 revoke special-files
-"$php" -i >"$work/info" 2>"$work/err"
+"$php" -d display_errors=stderr -i >"$work/info" 2>"$work/err"
 test ! -s "$work/info"
-grep -F '"group":"diagnostics"' "$work/err" >/dev/null
-grant diagnostics
-expect 'diagnostics alone restores phpinfo' information "$php" "$capabilities" diagnostics
+grep -F '"group":"debug"' "$work/err" >/dev/null
+grant debug
+expect 'debug alone restores phpinfo' information "$php" "$capabilities" debug
 "$php" -i >"$work/info"
 grep -q 'PHP Version' "$work/info"
+revoke debug
+
+# Debug output does not grant execution, uploads, or ordinary reflection.
+expect 'logging, exception traces and programmatic inspection work without debug' ordinary \
+    "$php" "$capabilities" debug-ordinary "$work"
+grep -q debug-ordinary-log "$work/debug-ordinary.log"
+expect 'ReflectionExtension info cannot bypass debug' refused \
+    "$php" "$capabilities" debug-module-denied
+grep -F '"group":"debug"' "$work/err" | grep -F '"operation":"module_info"'
+for extension in main standard; do
+    refuse "--ri $extension requires debug" php:debug "$php" --ri "$extension"
+done
+# The old diagnostics grant must not restore debug functions or traces.
+grant diagnostics
+expect 'the retired diagnostics grant does not restore debug functions' "$closed" report
 revoke diagnostics
+
+fatal_probe() {
+    mode=$1; setting=$2
+    if "$php" -d display_errors=stderr -d log_errors=0 -d "fatal_error_backtraces=$setting" \
+        "$capabilities" "$mode" "$base/debug" >"$work/fatal-out" 2>"$work/fatal-err"; then
+        echo "probe: FAIL: $mode did not terminate" >&2; exit 1
+    else
+        test "$?" = 255
+    fi
+}
+no_fatal_trace() {
+    if grep -q 'Stack trace:' "$work/fatal-out" "$work/fatal-err"; then
+        echo 'probe: FAIL: fatal backtrace captured without permission' >&2; exit 1
+    fi
+    grep -F '"group":"debug"' "$work/fatal-err" | grep -F '"operation":"fatal_error_backtraces"'
+}
+for mode in debug-fatal debug-fatal-quiet debug-oom; do
+    fatal_probe "$mode" 1
+    no_fatal_trace
+done
+fatal_probe debug-fatal-enable 0
+no_fatal_trace
+ln -s "$work/target" "$base/debug"
+fatal_probe debug-fatal 1
+no_fatal_trace
+revoke debug
+grant diagnostics
+fatal_probe debug-fatal 1
+no_fatal_trace
+revoke diagnostics
+grant debug
+fatal_probe debug-fatal 1
+grep -q 'Stack trace:' "$work/fatal-err"
+grep -q 'debug_fatal_probe' "$work/fatal-err"
+# An allowance permits the feature; it does not override an explicit INI opt-out.
+fatal_probe debug-fatal 0
+if grep -q 'Stack trace:\|runtime-denial' "$work/fatal-err"; then
+    echo 'probe: FAIL: debug overrode fatal_error_backtraces=0' >&2; exit 1
+fi
+"$php" --ri main >"$work/info"
+grep -q fatal_error_backtraces "$work/info"
+"$php" --ri standard >"$work/info"
+grep -q standard "$work/info"
+fatal_probe debug-fatal-revoke 1
+no_fatal_trace
+echo 'probe: ok: fatal capture needs debug despite INI settings and observes revocation'
 
 # A harmless mail transport proves all three entrypoints cross the helper.
 cat > "$work/sendmail" <<'SH'

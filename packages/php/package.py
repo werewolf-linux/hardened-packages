@@ -46,7 +46,7 @@ PROBE_CAPABILITIES = 'WEREWOLF_PROBE_CAPABILITIES'
 # (and the subpackages') run `php`, scripts and unserialize; the probe clears
 # them and proves deny-by-default. PHP has no `environment` group.
 GROUPS = ['exec', 'native', 'deserialize', 'inline', 'writable-source', 'upload', 'upload-progress',
-          'namespace', 'process', 'listen', 'special-files', 'diagnostics']
+          'namespace', 'process', 'listen', 'special-files', 'debug']
 
 def grant_all():
     return (runtime.build_root() + 'mkdir -p /etc/runtime-hardening/allow/all/php\n'

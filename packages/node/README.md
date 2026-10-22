@@ -35,7 +35,7 @@ supported group below; see [grant scope and restart instructions](../../docs/usa
 | `native` | Native addons, FFI (including pointer access), WASI, OpenSSL STORE loaders, SQLite extensions and `--openssl-config`. |
 | `inline` | `-e`, `-p`, stdin, REPL, worker `eval` and ordinary `data:` module imports. |
 | `writable-source` | Ordinary CommonJS/ESM main/dependency code on writable mounts, virtual module filesystems and disk compile caches. |
-| `environment` | Build-compatibility access to internal `NODE_*`/`OPENSSL_*` options; not exposed by Werewolf forms. |
+| `environment` | Build-compatibility access to internal `NODE_*`/`OPENSSL_*` options; Werewolf accepts `node:environment`. |
 
 `environment` never restores `NODE_OPTIONS`, `NODE_PATH` or home searches. Without
 `native`, startup also removes `OPENSSL_CONF`, `OPENSSL_CONF_INCLUDE`, `OPENSSL_MODULES`

@@ -11,12 +11,11 @@ Werewolf: add `php-8.5`, `php-8.5-fpm` and required `php-8.5-EXTENSION` packages
 apk add php-8.5@hardened php-8.5-fpm@hardened
 ```
 
-Start CLI/FPM as a non-root user; put scripts on a read-only mount. For a supported
-group, add `allow: [php:GROUP]` to the existing service. Newer groups may require
-[marker files](../../docs/usage.md#grant-an-allowance) until the builder recognizes them.
-For uploads to Werewolf's `php-fpm` service, create this empty file in your form:
-`rootfs/etc/runtime-hardening/allow/php-fpm/php/upload`. On Wolfi, create
-`/etc/runtime-hardening/allow/SERVICE/php/upload`. Rebuild/deploy and restart FPM.
+Start CLI/FPM as a non-root user; put scripts on a read-only mount. For uploads,
+add `allow: [php:upload]` to the existing Werewolf `php-fpm` service. On Wolfi, create
+the empty file `/etc/runtime-hardening/allow/SERVICE/php/upload`.
+Substitute any group below; see [marker files and scope](../../docs/usage.md#grant-an-allowance).
+Rebuild/deploy and restart FPM.
 Use `all` for image-wide grants. Neither `php.ini`, argv nor environment grants access.
 
 ## Patches
@@ -41,6 +40,7 @@ Use `all` for image-wide grants. Neither `php.ini`, argv nor environment grants 
 | [0016](patches/0016-optional-capability-functions.patch) | Gate optional OS/diagnostic functions and extend the function floor. | `exec`, `native`, `namespace`, `process`, `listen`, `special-files`, `diagnostics` |
 | [0017](patches/0017-mail-exec-allowance.patch) | Check the shared sendmail transport, including email-mode `error_log`. | `exec` |
 | [0018](patches/0018-native-library-loaders.patch) | Gate SQLite extension loaders and optional FFI APIs/header preload. | `native` |
+| [0019](patches/0019-debug-allowance.patch) | Gate fatal backtrace capture and debug output; replace `diagnostics`. | `debug` |
 
 ## Function groups
 
@@ -52,10 +52,16 @@ Use `all` for image-wide grants. Neither `php.ini`, argv nor environment grants 
 | `process` | `pcntl_fork`, `pcntl_rfork`, `pcntl_forkx`, `posix_setsid`, `posix_setpgid` |
 | `listen` | `stream_socket_server`, `stream_socket_accept` |
 | `special-files` | `posix_mkfifo`, `posix_mknod` |
-| `diagnostics` | `phpinfo()`, CLI `-i` |
+| `debug` | Fatal-error backtraces, `var_dump`, `print_r` (including return mode), `debug_zval_dump`, `debug_print_backtrace`, `phpinfo`, `phpcredits`, `ReflectionExtension::info()`, CLI `-i` and `--ri` |
 
 Function availability and `deserialize` are fixed at startup. Mail, native loaders,
-information, compiler and upload guards also check at use; progress checks once per body.
+information, fatal backtrace, compiler and upload guards also check at use; progress checks once per body.
+
+Replace existing `php:diagnostics` grants with `php:debug`; `diagnostics` no longer
+grants access. Fatal traces require both `debug` and `fatal_error_backtraces=1`;
+the allowance is checked before capture, even with `-d` or `ini_set()`.
+Ordinary logging, error handlers, exception traces, `debug_backtrace()` and
+`var_export()` remain available. Debug grants do not override `disable_functions`.
 
 ## Debug
 
@@ -66,6 +72,7 @@ Read [stderr denial records](../../docs/usage.md#debug-a-refusal), then match th
 | Multipart form empty; “multipart parsing is refused”; upload move returns false | Grant `upload`, including text-only multipart. Then check `file_uploads`, `post_max_size`, `upload_max_filesize`, upload temp/destination permissions and web-server limits. |
 | Upload works but progress is absent | Add `upload-progress` and enable `session.upload_progress.enabled`; ordinary uploads need only `upload`. |
 | “Call to undefined function” | Match the function group above; check `php -m` and `disable_functions` too. |
+| Fatal error has no backtrace; debug output refused | Grant `debug`, restart PHP, and enable `fatal_error_backtraces` if needed. |
 | WordPress/sendmail mail fails | Grant `exec` and permit/configure the transport, or use direct SMTP. File-mode `error_log` needs no grant. |
 | `__PHP_Incomplete_Class` | Use `unserialize($data, ['allowed_classes' => ['YourClass']])`, or grant `deserialize` for broader access. |
 | “unverified script source”; log group `source` | Put regular source on a read-only mount or grant `writable-source`; filters/user wrappers/stdin need `inline`. There is no `source` grant. |

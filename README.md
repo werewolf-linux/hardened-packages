@@ -72,7 +72,7 @@ actual execution paths. Current differences remain explicit:
 | `process` | not gated | fork, session/process group changes | not gated | not gated |
 | `listen` | not gated | stream socket servers and accepts | not gated | not gated |
 | `special-files` | not gated | FIFOs and special nodes | not gated | not gated |
-| `diagnostics` | not gated | `phpinfo()`, CLI `-i` | not gated | not gated |
+| `debug` | not gated | fatal backtraces, variable dumps, printed backtraces, PHP information | not gated | not gated |
 
 PHP gates string compilation with `inline` and verifies every compiled file by
 its opened descriptor, including OPcache hits. `php:upload` permits multipart parsing
