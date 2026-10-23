@@ -26,8 +26,11 @@ rm "${{targets.destdir}}"/usr/bin/npx'''
 PROBE_JS, PROBE_SH = 'WEREWOLF_NODE_PROBE_JS', 'WEREWOLF_NODE_PROBE_SH'
 # Wolfi's own patches, after its checkout, each reviewed; any other stops the
 # derivation. system-brotli-block-switch drops a constant the system brotli
-# lacks, so Node builds against it (Wolfi's 26.12.1).
-WOLFI_PATCHES = ('system-brotli-block-switch.patch',)
+# lacks, so Node builds against it (26.12.1-r0). ncrypto-pbkdf2-pkcs5 passes
+# pkcs5=1 to PBKDF2 under OpenSSL 4 as Node always did under OpenSSL 3: the
+# SP 800-132 lower bounds, which only the FIPS provider applies by default,
+# stay off (26.12.1-r2).
+WOLFI_PATCHES = ('system-brotli-block-switch.patch', 'ncrypto-pbkdf2-pkcs5.patch')
 
 
 def source_commit(config):
