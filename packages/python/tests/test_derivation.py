@@ -141,6 +141,17 @@ class Derivation(unittest.TestCase):
         subprocess.run(['sh', '-eu', '-c', script], check=True)
         self.assertEqual(set(kept), {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()})
 
+    def test_the_c_extension_test_names_its_directory(self):
+        # Ours leaves the working directory off sys.path, which Wolfi's test relies on.
+        pkg, upstream, derived = self.derived()
+        for sub in derived['subpackages']:
+            steps = sub.get('test', {}).get('pipeline', [])
+            self.assertNotIn(pkg.hooks.C_EXT, [s.get('uses') for s in steps])
+        dev = {s['name']: s for s in derived['subpackages']}
+        for name in ('${{package.name}}${{range.key}}-dev', '${{package.name}}${{range.key}}-base-dev'):
+            runs = [s.get('runs', '') for s in dev[name]['test']['pipeline']]
+            self.assertTrue(any('sys.path.insert(0, sys.argv[1])' in r for r in runs), name)
+
     def test_changed_recipes_stop_the_derivation_for_review(self):
         def repository(recipe):
             recipe['pipeline'][0]['with']['repository'] = 'https://example.com/cpython'

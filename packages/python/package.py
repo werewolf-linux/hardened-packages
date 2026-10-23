@@ -84,6 +84,47 @@ def prune():
             'rm "${{targets.contextdir}}/usr/lib/${{vars.python}}/lib-dynload"/_tkinter.*.so\n'
             'rm -R "${{targets.contextdir}}/usr/share/man"\n'}
 
+# Wolfi's C extension test imports its module from the working directory,
+# which ours leaves off sys.path (patches/0002): the same build and import,
+# with the module's directory named.
+C_EXT = 'test/python/interpreter/c-ext'
+
+def c_ext(python):
+    return {'name': 'Build and import a C extension from its directory', 'runs':
+            'python="' + python + '"\n'
+            'd=$(mktemp -d)\n'
+            "cat > \"$d/c_ext_check.c\" <<'EOF'\n"
+            '#include <Python.h>\n'
+            'static PyObject *answer(PyObject *self, PyObject *args) { return PyLong_FromLong(42); }\n'
+            'static PyMethodDef methods[] = {{"answer", answer, METH_NOARGS, NULL}, {NULL, NULL, 0, NULL}};\n'
+            'static struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "c_ext_check", NULL, 0, methods};\n'
+            'PyMODINIT_FUNC PyInit_c_ext_check(void) { return PyModuleDef_Init(&module); }\n'
+            'EOF\n'
+            'include=$("$python" -c \'import sysconfig; print(sysconfig.get_path("include"))\')\n'
+            'ext=$("$python" -c \'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))\')\n'
+            'cc -shared -fPIC -I"$include" "$d/c_ext_check.c" -o "$d/c_ext_check$ext"\n'
+            '"$python" -c "import sys; sys.path.insert(0, sys.argv[1]); import c_ext_check; '
+            'assert c_ext_check.answer() == 42; print(\'c_ext_check: built and imported\')" "$d"\n'
+            'rm -rf "$d"\n',
+            'needs': {'packages': ['build-base']}}
+
+def ours_for_c_ext(subpackages):
+    """subpackages with each test of Wolfi's C extension step replaced by ours."""
+    out = []
+    for sub in subpackages:
+        test = sub.get('test')
+        if test and any(step.get('uses') == C_EXT for step in test.get('pipeline', [])):
+            steps = []
+            for step in test['pipeline']:
+                if step.get('uses') == C_EXT:
+                    if set(step) != {'uses', 'with'} or set(step['with']) != {'python'}:
+                        raise ValueError('Review changed upstream C extension test before deriving')
+                    step = c_ext(step['with']['python'])
+                steps.append(step)
+            sub = {**sub, 'test': {**test, 'pipeline': steps}}
+        out.append(sub)
+    return out
+
 def runtime_of(subpackages):
     """The kept -runtime subpackage, which builds the interpreter."""
     return next(s for s in subpackages if s['name'] == RUNTIME)
@@ -134,7 +175,7 @@ def derive(pkg, config, lock):
     config['vars'][OPTIONS], count = line.subn('', options)
     if count != 1:
         raise ValueError('Review changed upstream configure option ' + REMOVED_OPTION + ' before deriving')
-    config['subpackages'] = retained_subpackages(config)
+    config['subpackages'] = ours_for_c_ext(retained_subpackages(config))
     build = runtime_of(config['subpackages'])['pipeline']
     if not [s for s in build if s.get('uses') == 'autoconf/configure']:
         raise ValueError('Review changed upstream runtime build before deriving')
@@ -192,6 +233,7 @@ def check(pkg, upstream, derived):
         p for p in s.get('dependencies', {}).get('provides', []) if not p.startswith('wolfi-origin:')]},
         'pipeline': [x for x in s.get('pipeline', []) if x != prune()]}
         for s in subs]
-    assert strip(retained_subpackages(upstream)) == strip(derived['subpackages']), 'an upstream subpackage changed'
+    assert strip(ours_for_c_ext(retained_subpackages(upstream))) == strip(derived['subpackages']), \
+        'an upstream subpackage changed'
     for test in upstream['test']['pipeline']:
         assert test in derived['test']['pipeline'], "Wolfi's package test removed"
