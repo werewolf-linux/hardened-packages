@@ -10,6 +10,7 @@ drivers as modules, which werewolf's own kernel does not have.
 usage: build.py PACKAGE [--arch ARCH] [--test-only]"""
 import argparse
 import fcntl
+import fnmatch
 import functools
 import gzip
 import hashlib
@@ -161,11 +162,13 @@ def main():
             # test resolves the corresponding runtime dependencies as well.
             package = config['package']
             version = f"{package['version']}-r{package['epoch']}"
-            # A package names subpackages that conflict with one another (libffi's
-            # dev and pic-dev both provide pc:libffi); each resolves on its own.
+            # A package names, or matches by pattern, subpackages that must not be
+            # in every test: two that conflict (libffi's dev and pic-dev both
+            # provide pc:libffi), or files a test requires absent (glibc's
+            # locales, which its main package must not hold). Each resolves alone.
             unpinned = pkg.hook('TEST_UNPINNED', ())
             candidates = [name + '=' + version for name in sorted(packages.output_names(config))
-                          if name not in unpinned]
+                          if not any(fnmatch.fnmatchcase(name, p) for p in unpinned)]
             extra = [arg for name in candidates + pkg.hook('TEST_PACKAGES', ['busybox', 'apk-tools'])
                      for arg in ('--test-package-append', name)]
             try:

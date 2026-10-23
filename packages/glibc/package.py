@@ -23,6 +23,9 @@ REMOVED = {'nscd', 'nss-db', 'nss-hesiod', 'sotruss', 'pcprofiledump', 'glibc-tr
 HARDENING = ['CFLAGS += -fstrict-flex-arrays=3', 'LDFLAGS.so += -Wl,-z,separate-code',
              'LDFLAGS-rtld += -Wl,-z,separate-code']
 MIN_KERNEL = '6.18'
+# Wolfi's main-package test requires /usr/lib/locale to hold C.utf8 alone, so no
+# test environment holds every locale subpackage; each locale's own test has it.
+TEST_UNPINNED = ('glibc-neutered-*-locale-*', 'glibc-neutered-*-locales')
 
 def version(text):
     return tuple(int(x) for x in text.split('.'))
