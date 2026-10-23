@@ -17,8 +17,12 @@ import verify
 FIXTURE = yaml.safe_load((Path(__file__).parent / 'fixtures/nodejs-26.yaml').read_text())
 PACKAGE = packages.Package('node')
 COMMIT = PACKAGE.hooks.source_commit(FIXTURE)
-LOCK = {'recipe': 'nodejs-26.yaml', 'version': '26.12.0', 'epoch': 0,
+LOCK = {'recipe': 'nodejs-26.yaml', 'version': '26.12.1', 'epoch': 0,
         'revision': 1, 'source_commit': COMMIT}
+
+
+def named(pipeline, name):
+    return next(s for s in pipeline if s.get('name') == name)
 
 
 class NodeDerivation(unittest.TestCase):
@@ -43,8 +47,8 @@ class NodeDerivation(unittest.TestCase):
         upstream, result = self.derived()
         verify.check(PACKAGE, upstream, result)
         self.assertEqual({'nodejs-26'}, publish.package_names(result))
-        self.assertEqual('26.12.0-r1000', PACKAGE.hooks.full_version(LOCK))
-        self.assertIn('wolfi-origin:nodejs-26:26.12.0-r0', result['package']['dependencies']['provides'])
+        self.assertEqual('26.12.1-r1000', PACKAGE.hooks.full_version(LOCK))
+        self.assertIn('wolfi-origin:nodejs-26:26.12.1-r0', result['package']['dependencies']['provides'])
         self.assertIn('nodejs-hardened=${{package.full-version}}', result['package']['dependencies']['provides'])
         self.assertEqual([], result['subpackages'])
         build = next(s['runs'] for s in result['pipeline'] if s.get('name') == PACKAGE.hooks.BUILD)
@@ -53,7 +57,7 @@ class NodeDerivation(unittest.TestCase):
 
     def test_build_and_test_guests_alone_get_capabilities(self):
         _, result = self.derived()
-        allowed = result['pipeline'][2]
+        allowed = named(result['pipeline'], PACKAGE.hooks.ALLOW)
         self.assertIn('/etc/runtime-hardening/build-root', allowed['runs'])
         for group in PACKAGE.hooks.GROUPS:
             self.assertIn(group, allowed['runs'])
@@ -62,15 +66,23 @@ class NodeDerivation(unittest.TestCase):
         self.assertIn('effective root', result['test']['pipeline'][-1]['runs'])
         self.assertEqual({'packages': ['build-base']}, result['test']['pipeline'][-1]['needs'])
 
+    def test_reviewed_wolfi_patches_apply_before_ours(self):
+        upstream, result = self.derived()
+        uses = [s.get('uses') or s.get('name') for s in result['pipeline'][:4]]
+        self.assertEqual([None, 'patch', 'Apply Werewolf policy patches', PACKAGE.hooks.ALLOW],
+                         [None] + uses[1:])
+        self.assertEqual(upstream['pipeline'][1], result['pipeline'][1])
+
     def test_changed_build_paths_stop_for_review(self):
         changes = [
             lambda c: c['pipeline'].append({'runs': 'new install'}),
             lambda c: c['pipeline'].insert(1, {'uses': 'patch'}),
+            lambda c: c['pipeline'].insert(1, {'uses': 'patch', 'with': {'patches': 'unreviewed.patch'}}),
             lambda c: c['subpackages'].append({'name': '${{package.name}}-new'}),
             lambda c: c['subpackages'].pop(),
             lambda c: c['pipeline'][0]['with'].update(repository='https://example.com/node'),
-            lambda c: c['pipeline'][1].update(name='Build changed'),
-            lambda c: c['pipeline'][1].update(runs='configure differently'),
+            lambda c: named(c['pipeline'], PACKAGE.hooks.BUILD).update(name='Build changed'),
+            lambda c: named(c['pipeline'], PACKAGE.hooks.BUILD).update(runs='configure differently'),
         ]
         for change in changes:
             with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'Review'):
@@ -79,8 +91,10 @@ class NodeDerivation(unittest.TestCase):
     def test_relaxing_the_derived_build_is_rejected(self):
         upstream, result = self.derived()
         for change in [
-            lambda c: c['pipeline'][3].update(runs=c['pipeline'][3]['runs'].replace('--without-inspector', '')),
-            lambda c: c['pipeline'][2].update(runs='true'),
+            lambda c: named(c['pipeline'], PACKAGE.hooks.BUILD).update(
+                runs=named(c['pipeline'], PACKAGE.hooks.BUILD)['runs'].replace('--without-inspector', '')),
+            lambda c: named(c['pipeline'], PACKAGE.hooks.ALLOW).update(runs='true'),
+            lambda c: c['pipeline'].pop(1),
             lambda c: c['subpackages'].append(upstream['subpackages'][0]),
             lambda c: c['test']['pipeline'].pop(0),
             lambda c: c.update(update={'enabled': True}),
