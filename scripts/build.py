@@ -161,7 +161,11 @@ def main():
             # test resolves the corresponding runtime dependencies as well.
             package = config['package']
             version = f"{package['version']}-r{package['epoch']}"
-            candidates = [name + '=' + version for name in sorted(packages.output_names(config))]
+            # A package names subpackages that conflict with one another (libffi's
+            # dev and pic-dev both provide pc:libffi); each resolves on its own.
+            unpinned = pkg.hook('TEST_UNPINNED', ())
+            candidates = [name + '=' + version for name in sorted(packages.output_names(config))
+                          if name not in unpinned]
             extra = [arg for name in candidates + pkg.hook('TEST_PACKAGES', ['busybox', 'apk-tools'])
                      for arg in ('--test-package-append', name)]
             try:

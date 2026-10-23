@@ -66,7 +66,8 @@ def report(pkg, kind, log, lock, run):
                  '- Source: `{}`\n'.format(lock['recipe'], lock['wolfi_commit'][:12], lock['wolfi_commit'],
                                            lock['recipe'], lock['source_commit']))
     else:
-        version, facts = pkg.title + ' (latest Wolfi)', '- Wolfi recipe: `{}*.yaml`, not captured\n'.format(pkg.hooks.FAMILY)
+        version, facts = pkg.title + ' (latest Wolfi)', '- Wolfi recipe: `{}`, not captured\n'.format(
+            pkg.hooks.RECIPE + '.yaml' if pkg.hook('RECIPE') else pkg.hooks.FAMILY + '*.yaml')
     if kind == 'fuzz':
         fuzzy = fuzzy_patches(log)
         title = '{}: {} applies only with fuzz'.format(version, ', '.join(fuzzy) or 'a patch')

@@ -185,7 +185,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [glibc, node, openjdk, php, python]
+        package: [glibc, libffi, node, openjdk, php, python]
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     environment: release

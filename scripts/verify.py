@@ -14,9 +14,11 @@ import patching
 HEADERS = ('Subject:', 'Upstream-Status:', 'Reference:')
 
 def series(pkg):
-    """Assert patches/series lists every patch once, numbered in order, each with its header."""
+    """Assert patches/series lists every patch once, numbered in order, each with its header.
+
+    It may be empty: a package whose policy is its recipe's build options alone."""
     names = (pkg.dir / 'patches/series').read_text().split()
-    assert names and len(names) == len(set(names)), 'patches/series lists each patch once'
+    assert len(names) == len(set(names)), 'patches/series lists each patch once'
     assert set(names) == {p.name for p in (pkg.dir / 'patches').glob('*.patch')}, 'patches/series and patches/ differ'
     for number, name in enumerate(names, 1):
         assert re.fullmatch(r'%04d-[a-z0-9-]+\.patch' % number, name), name
@@ -31,7 +33,9 @@ def check(pkg, upstream, derived):
     assert not [x for x in derived['pipeline'] if x.get('uses') == 'git-checkout'], "Wolfi's checkout replaced"
     assert derived['update'] == {'enabled': False}, "Wolfi's update automation stays off"
     ours = [x for x in derived['pipeline'] if x.get('name') == 'Apply Werewolf policy patches']
-    assert ours == [patching.step(pkg.hooks.PATCHES)], 'patches apply by the shared step, once'
+    patched = bool((pkg.dir / 'patches/series').read_text().split())
+    assert ours == ([patching.step(pkg.hooks.PATCHES)] if patched else []), \
+        'patches apply by the shared step, once, if there are any'
     series(pkg)
     pkg.hooks.check(pkg, upstream, derived)
 

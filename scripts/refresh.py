@@ -7,6 +7,8 @@ stream whose version is a release, or Wolfi's snapshot of a released branch
 (3.15.0_git20261010), never a pre-release such as 3.15.0_rc1. policy.json's
 "stream" pins an older one, only where something still needs it.
 
+A package Wolfi keeps in one recipe (libffi.yaml) names it as RECIPE instead.
+
 usage: refresh.py [--wolfi CHECKOUT] [PACKAGE...]    every package by default"""
 import argparse
 import json
@@ -28,13 +30,20 @@ def version_key(text):
     return tuple(int(x) for x in text.split('.'))
 
 def latest(pkg, checkout):
-    """The path and config of pkg's newest stable recipe in checkout."""
-    family = pkg.hooks.FAMILY
+    """The path and config of pkg's newest stable recipe in checkout.
+
+    A package follows a FAMILY of streams, or one RECIPE that Wolfi versions
+    within (libffi.yaml), whose release is the only candidate."""
+    recipe = pkg.hook('RECIPE')
+    family = pkg.hook('FAMILY')
     pinned = pkg.policy.get('stream')
     stable = pkg.hook('stable', lambda config: True)
     candidates = []
-    for path in checkout.glob(family + '*.yaml'):
-        stream = path.stem[len(family):]
+    paths = [checkout / (recipe + '.yaml')] if recipe else checkout.glob(family + '*.yaml')
+    for path in paths:
+        if not path.is_file():
+            continue
+        stream = '0' if recipe else path.stem[len(family):]
         if not STREAM.fullmatch(stream) or (pinned and stream != pinned):
             continue
         config = yaml.safe_load(path.read_text())
@@ -42,7 +51,7 @@ def latest(pkg, checkout):
         version = str(package.get('version', ''))
         if package.get('name') != path.stem or not RELEASE.fullmatch(version):
             continue
-        if version != stream and not version.startswith(stream + '.'):
+        if not recipe and version != stream and not version.startswith(stream + '.'):
             continue
         if stable(config):
             candidates.append((version_key(stream), path, config))

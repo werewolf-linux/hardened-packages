@@ -15,7 +15,7 @@ Consumers use one feed: **https://dist.werewolf-linux.org/apk/hardened**, with
 | [openjdk](packages/openjdk/README.md) | newest `openjdk-*` | object deserialization and native access restricted; see manifest exception |
 | [python](packages/python/README.md) | newest `python-3.*` | no user site; environment, ctypes, pickle globals, inline and writable main scripts gated |
 | [node](packages/node/README.md) | newest `nodejs-*` | no npm, inspector or SEA; exec, native, inline and writable modules require allowances |
-| [libffi](ports/libffi/README.md) | standalone 3.8.0 port | static callback trampolines for MDWE; local overlay, outside the feed |
+| [libffi](packages/libffi/README.md) | `libffi` | callbacks from read-only library code (static trampolines), so they work under MDWE |
 
 Each package guide covers installation on Werewolf/Wolfi, every patch and allowance,
 build changes and troubleshooting. Start with [feed setup, grants and denial logs](docs/usage.md).
@@ -181,9 +181,9 @@ Make `packages/NAME/` with `package.py`, `policy.json` (`{"revision": 1}`),
 
 | Hook | Required | Purpose |
 |---|---|---|
-| `FAMILY` | yes | recipe prefix, such as `php-`; the newest stable stream wins |
+| `FAMILY` or `RECIPE` | yes | recipe prefix, such as `php-`, whose newest stable stream wins; or one recipe Wolfi versions within, such as `libffi` |
 | `SOURCES` or `sources(lock)` | yes | git URLs for the locked commit, first choice first |
-| `PATCHES` | yes | patch directory inside the build context |
+| `PATCHES` | yes | patch directory inside the build context; `None` with an empty `patches/series`, for a policy of build options alone |
 | `source_commit(config)` | yes | the commit Wolfi's recipe pins |
 | `full_version(lock)` | yes | the version we publish |
 | `context(pkg, dir)` | yes | copy patches and probes into the build context |
@@ -191,7 +191,7 @@ Make `packages/NAME/` with `package.py`, `policy.json` (`{"revision": 1}`),
 | `check(pkg, upstream, derived)` | yes | refuse a derivation that lost a protection |
 | `TITLE`, `UPSTREAM` | no | names for issues and release notes |
 | `stable`, `check_policy`, `prepared` | no | refresh and prepare checks |
-| `test_recipe`, `TEST_PACKAGES`, `MIN_KERNEL` | no | package tests |
+| `test_recipe`, `TEST_PACKAGES`, `TEST_UNPINNED`, `MIN_KERNEL` | no | package tests |
 | `check_apk`, `check_apks`, `gather`, `notes` | no | publication checks and notes |
 
 Raise `policy.json`'s revision whenever patches, packaging or tests change behaviour:
