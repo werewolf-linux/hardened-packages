@@ -59,7 +59,9 @@ Process execution remains subject to OS/Werewolf policy, without a Python `exec`
 
 Keep Wolfi's commit, patches, toolchain, ordinary interpreter PGO and retained tests.
 Remove `--enable-loadable-sqlite-extensions`; no allowance restores SQLite loading.
-Ship `python-3.15`, `-base`, `-dev`, `-base-dev`; use development packages for builds.
+Ship `python-3.15` (a metapackage), `-runtime` (the `python`, `python3` and `pydoc3`
+commands, and where Wolfi builds the interpreter), `-base` (the interpreter and
+standard library), `-dev`, `-base-dev`; use development packages for builds.
 Omit free-threaded `python-3.15t`/`t-dev`, experimental `-jit`, Tkinter `-tk`,
 manpages `-doc` and their build copies/files. Omit `-privileged-netbindservice`,
 which would attach `CAP_NET_BIND_SERVICE` to the interpreter binary.

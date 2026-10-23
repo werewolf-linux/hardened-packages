@@ -18,7 +18,7 @@ import verify
 HERE = Path(__file__).resolve().parent
 FIXTURE = yaml.safe_load((HERE / 'fixtures/python-3.15.yaml').read_text())
 COMMIT = next(s for s in FIXTURE['pipeline'] if s.get('uses') == 'git-checkout')['with']['expected-commit']
-LOCK = {'recipe': 'python-3.15.yaml', 'version': '3.15.0_git20261017', 'epoch': 1, 'revision': 1,
+LOCK = {'recipe': 'python-3.15.yaml', 'version': '3.15.0_git20261017', 'epoch': 3, 'revision': 1,
         'source_commit': COMMIT}
 
 
@@ -42,17 +42,21 @@ class Derivation(unittest.TestCase):
     def names(self, derived):
         return [s.get('name') or s.get('uses') for s in derived['pipeline']]
 
+    def runtime(self, recipe):
+        return next(s for s in recipe['subpackages'] if s['name'] == '${{package.name}}${{range.key}}-runtime')
+
     def test_wolfi_names_and_a_version_above_every_wolfi_rebuild(self):
         pkg, _, derived = self.derived()
         self.assertEqual('python-3.15', derived['package']['name'])
-        self.assertEqual(1001, derived['package']['epoch'])
-        self.assertEqual('3.15.0_git20261017-r1001', pkg.hooks.full_version(LOCK))
-        self.assertEqual(['${{package.name}}-base', '${{package.name}}-dev', '${{package.name}}-base-dev'],
+        self.assertEqual(1003, derived['package']['epoch'])
+        self.assertEqual('3.15.0_git20261017-r1003', pkg.hooks.full_version(LOCK))
+        self.assertEqual(['${{package.name}}${{range.key}}-runtime', '${{package.name}}${{range.key}}-base',
+                          '${{package.name}}${{range.key}}-dev', '${{package.name}}${{range.key}}-base-dev'],
                          [s['name'] for s in derived['subpackages']])
-        self.assertEqual({'python-3.15', 'python-3.15-base', 'python-3.15-dev', 'python-3.15-base-dev'},
-                         publish.package_names(derived))
+        self.assertEqual({'python-3.15', 'python-3.15-runtime', 'python-3.15-base', 'python-3.15-dev',
+                          'python-3.15-base-dev'}, publish.package_names(derived))
         for section in [derived['package']] + derived['subpackages']:
-            self.assertIn('wolfi-origin:python-3.15:3.15.0_git20261017-r1', section['dependencies']['provides'])
+            self.assertIn('wolfi-origin:python-3.15:3.15.0_git20261017-r3', section['dependencies']['provides'])
 
     def test_the_locked_commit_is_fetched_in_place_of_wolfis_checkout(self):
         _, _, derived = self.derived()
@@ -65,15 +69,16 @@ class Derivation(unittest.TestCase):
         names = self.names(derived)
         ours = names.index('Apply Werewolf policy patches')
         self.assertEqual('patch', derived['pipeline'][ours - 1]['uses'])
-        self.assertLess(ours, names.index('autoconf/configure'))
         self.assertNotIn('Clone patched source for no-GIL and JIT builds', names)
-        self.assertLess(names.index('Allow every runtime-hardening group in the build guest only'),
-                        names.index('autoconf/configure'))
+        self.assertIn('Allow every runtime-hardening group in the build guest only', names)
+        # The interpreter configures in -runtime, whose pipeline runs after the main one.
+        self.assertNotIn('autoconf/configure', names)
+        self.assertIn('autoconf/configure', [s.get('uses') for s in self.runtime(derived)['pipeline']])
 
     def test_loadable_sqlite_extensions_alone_leave_the_configure_options(self):
         _, upstream, derived = self.derived()
-        before = upstream['vars']['python-config'].splitlines()
-        after = derived['vars']['python-config'].splitlines()
+        before = upstream['vars']['config-opts-common'].splitlines()
+        after = derived['vars']['config-opts-common'].splitlines()
         self.assertEqual([o for o in before if 'loadable-sqlite' not in o], after)
         self.assertEqual(len(before) - 1, len(after))
 
@@ -116,7 +121,7 @@ class Derivation(unittest.TestCase):
 
     def test_cleanup_discards_gui_and_manpages_but_preserves_runtime_and_headers(self):
         pkg, _, derived = self.derived()
-        # Main-pipeline cleanup runs before Melange splits files into base/dev.
+        # -runtime's last step runs before -base, -dev and -base-dev take their files.
         root = Path(self.directory.name) / 'installed files'
         kept = ['usr/lib/python3.15/os.py',
                 'usr/lib/python3.15/lib-dynload/_sqlite3.cpython-315.so',
@@ -129,8 +134,9 @@ class Derivation(unittest.TestCase):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
-        self.assertEqual(pkg.hooks.PRUNE, derived['pipeline'][-1]['name'])
-        script = derived['pipeline'][-1]['runs'].replace('${{targets.destdir}}', str(root)).replace(
+        last = self.runtime(derived)['pipeline'][-1]
+        self.assertEqual(pkg.hooks.PRUNE, last['name'])
+        script = last['runs'].replace('${{targets.contextdir}}', str(root)).replace(
             '${{vars.python}}', 'python3.15')
         subprocess.run(['sh', '-eu', '-c', script], check=True)
         self.assertEqual(set(kept), {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()})
@@ -140,7 +146,7 @@ class Derivation(unittest.TestCase):
             recipe['pipeline'][0]['with']['repository'] = 'https://example.com/cpython'
 
         def option(recipe):
-            recipe['vars']['python-config'] = recipe['vars']['python-config'].replace(
+            recipe['vars']['config-opts-common'] = recipe['vars']['config-opts-common'].replace(
                 '--enable-loadable-sqlite-extensions \\\n', '')
 
         def clone(recipe):
@@ -167,8 +173,11 @@ class Derivation(unittest.TestCase):
         def missing_subpackage(recipe):
             recipe['subpackages'].pop()
 
+        def variant(recipe):
+            recipe['data'][0]['items']['t'] = '${{vars.config-opts-freethreading}}'
+
         for change in [repository, option, clone, late_patch, name, second_checkout,
-                       privileged_subpackage, unknown_subpackage, missing_subpackage]:
+                       privileged_subpackage, unknown_subpackage, missing_subpackage, variant]:
             with self.subTest(change.__name__), self.assertRaisesRegex(ValueError, 'Review'):
                 self.derived(change)
 
@@ -183,11 +192,12 @@ class Derivation(unittest.TestCase):
             lambda d: d['environment']['contents']['packages'].remove('build-base'),
             lambda d: d['test']['pipeline'].pop(0),
             lambda d: d['subpackages'][0]['pipeline'].pop(),
-            lambda d: d['pipeline'].pop(),
-            lambda d: d['pipeline'][-1].update(runs='true\n'),
+            lambda d: self.runtime(d)['pipeline'].pop(),
+            lambda d: self.runtime(d)['pipeline'][-1].update(runs='true\n'),
+            lambda d: d['data'][0]['items'].update(t='${{vars.config-opts-freethreading}}'),
             lambda d: d['pipeline'].insert(0, copy.deepcopy(next(s for s in upstream['pipeline']
                 if s.get('name') == 'Clone patched source for no-GIL and JIT builds'))),
-            lambda d: d['vars'].update({'python-config': d['vars']['python-config'] + '--enable-loadable-sqlite-extensions \\\n'}),
+            lambda d: d['vars'].update({'config-opts-common': d['vars']['config-opts-common'] + '--enable-loadable-sqlite-extensions \\\n'}),
             lambda d: d.update(update={'enabled': True}),
         ]:
             relaxed = copy.deepcopy(derived)

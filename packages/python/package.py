@@ -18,9 +18,15 @@ UPSTREAM = 'https://github.com/python/cpython'
 PATCHES = 'werewolf/patches'  # in the build context
 # The configure option this build leaves out: sqlite3 loading native code.
 REMOVED_OPTION = '--enable-loadable-sqlite-extensions'
-KEPT_SUBPACKAGES = tuple('${{package.name}}' + suffix for suffix in ('-base', '-dev', '-base-dev'))
+# Wolfi builds the interpreter in its -runtime subpackage, once per item of
+# its variants range; python-3.15 itself is a metapackage depending on it.
+VARIANTS = [{'name': 'variants', 'items': {'': '${{vars.config-opts-gil}}'}}]
+OPTIONS = 'config-opts-common'
+RUNTIME = '${{package.name}}${{range.key}}-runtime'
+KEPT_SUBPACKAGES = (RUNTIME,) + tuple('${{package.name}}${{range.key}}' + suffix
+                                      for suffix in ('-base', '-dev', '-base-dev'))
 OMITTED_SUBPACKAGES = tuple('${{package.name}}' + suffix for suffix in (
-    't', 't-dev', '-jit', '-privileged-netbindservice', '-tk', '-doc'))
+    't', 't-dev', '-jit', '-privileged-netbindservice', '${{range.key}}-tk', '${{range.key}}-doc'))
 CLONE = 'Clone patched source for no-GIL and JIT builds'
 PRUNE = 'Remove GUI and documentation files before splitting packages'
 ALLOW = 'Allow every runtime-hardening group in the build guest only'
@@ -70,11 +76,17 @@ def retained_subpackages(config):
 
 def prune():
     # Without Wolfi's -tk and -doc split steps these files would stay in the
-    # main/base packages. Missing paths fail the build for upstream review.
+    # runtime and base packages. The last step of -runtime, which installs
+    # them, before -base takes its share. Missing paths fail the build for
+    # upstream review.
     return {'name': PRUNE, 'runs':
-            'rm -R "${{targets.destdir}}/usr/lib/${{vars.python}}/tkinter"\n'
-            'rm "${{targets.destdir}}/usr/lib/${{vars.python}}/lib-dynload"/_tkinter.*.so\n'
-            'rm -R "${{targets.destdir}}/usr/share/man"\n'}
+            'rm -R "${{targets.contextdir}}/usr/lib/${{vars.python}}/tkinter"\n'
+            'rm "${{targets.contextdir}}/usr/lib/${{vars.python}}/lib-dynload"/_tkinter.*.so\n'
+            'rm -R "${{targets.contextdir}}/usr/share/man"\n'}
+
+def runtime_of(subpackages):
+    """The kept -runtime subpackage, which builds the interpreter."""
+    return next(s for s in subpackages if s['name'] == RUNTIME)
 
 def probe(pkg):
     py = (pkg.dir / 'tests/probe.py').read_text()
@@ -103,8 +115,10 @@ def derive(pkg, config, lock):
     patched = [i for i, step in enumerate(pipeline) if step.get('uses') == 'patch']
     clones = [i for i, step in enumerate(pipeline) if step.get('name') == CLONE]
     configures = [i for i, step in enumerate(pipeline) if step.get('uses') == 'autoconf/configure']
-    if not patched or len(clones) != 1 or not configures or not patched[-1] < clones[0] < configures[0]:
+    if not patched or len(clones) != 1 or configures or not patched[-1] < clones[0]:
         raise ValueError('Review changed upstream patch and clone steps before deriving')
+    if config.get('data') != VARIANTS:
+        raise ValueError('Review changed upstream interpreter variants before deriving')
     pipeline.pop(clones[0])
     # The build runs the new python on build-tree scripts (writable-source),
     # with -c (inline), importing every extension it built (native), and its
@@ -115,13 +129,16 @@ def derive(pkg, config, lock):
     pipeline[patched[-1] + 1:patched[-1] + 1] = [
         patching.step(PATCHES),
         {'name': ALLOW, 'runs': grant_all()}]
-    options = config['vars']['python-config']
+    options = config['vars'][OPTIONS]
     line = re.compile(r'^[ \t]*' + re.escape(REMOVED_OPTION) + r'[ \t]*\\\n', re.M)
-    config['vars']['python-config'], count = line.subn('', options)
+    config['vars'][OPTIONS], count = line.subn('', options)
     if count != 1:
         raise ValueError('Review changed upstream configure option ' + REMOVED_OPTION + ' before deriving')
     config['subpackages'] = retained_subpackages(config)
-    pipeline.append(prune())
+    build = runtime_of(config['subpackages'])['pipeline']
+    if not [s for s in build if s.get('uses') == 'autoconf/configure']:
+        raise ValueError('Review changed upstream runtime build before deriving')
+    build.append(prune())
     wolfi = str(config['package']['version']) + '-r' + str(config['package']['epoch'])
     config['package']['epoch'] = epoch(config['package']['epoch'], lock['revision'])
     config['package']['description'] += ' (Werewolf fixed hardening policy)'
@@ -150,7 +167,7 @@ def test_recipe(config, repository):
 
 def check(pkg, upstream, derived):
     """Keep Wolfi's ordinary build and tests, apart from the documented omissions."""
-    options = lambda c: c['vars']['python-config'].splitlines()
+    options = lambda c: c['vars'][OPTIONS].splitlines()
     kept = [o for o in options(upstream) if REMOVED_OPTION not in o]
     assert options(derived) == kept, 'upstream configure options changed beyond the removed one'
     assert not [o for o in options(derived) if REMOVED_OPTION in o], 'loadable sqlite extensions still configured'
@@ -161,14 +178,19 @@ def check(pkg, upstream, derived):
     ours = names.index('Apply Werewolf policy patches')
     assert derived['pipeline'][ours - 1] == patches(upstream)[-1], "our patches must follow Wolfi's"
     assert CLONE not in names, 'the omitted variants must not clone the source tree'
-    assert derived['pipeline'][-1] == prune(), 'GUI and documentation files must be removed before splitting'
-    assert sum(name == PRUNE for name in names) == 1, 'one GUI and documentation cleanup step'
-    ours_only = ('Apply Werewolf policy patches', ALLOW, PRUNE, 'Fetch the locked source commit')
+    assert derived.get('data') == VARIANTS == upstream.get('data'), 'interpreter variants changed'
+    runtime = runtime_of(derived['subpackages'])['pipeline']
+    assert runtime[-1] == prune(), 'GUI and documentation files must be removed before splitting'
+    assert PRUNE not in names and sum(x.get('name') == PRUNE for x in runtime) == 1, \
+        'one GUI and documentation cleanup step, in -runtime'
+    ours_only = ('Apply Werewolf policy patches', ALLOW, 'Fetch the locked source commit')
     steps = lambda c, omitted: [x for x in c['pipeline']
                                if x.get('name') not in omitted and x.get('uses') != 'git-checkout']
     assert steps(upstream, (CLONE,)) == steps(derived, ours_only), 'an upstream build step changed'
+    # Ours, apart from the wolfi-origin provides and the cleanup in -runtime.
     strip = lambda subs: [{**s, 'dependencies': {**s.get('dependencies', {}), 'provides': [
-        p for p in s.get('dependencies', {}).get('provides', []) if not p.startswith('wolfi-origin:')]}}
+        p for p in s.get('dependencies', {}).get('provides', []) if not p.startswith('wolfi-origin:')]},
+        'pipeline': [x for x in s.get('pipeline', []) if x != prune()]}
         for s in subs]
     assert strip(retained_subpackages(upstream)) == strip(derived['subpackages']), 'an upstream subpackage changed'
     for test in upstream['test']['pipeline']:
